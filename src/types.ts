@@ -4,38 +4,30 @@ export type Direction = "N" | "S" | "E" | "W";
 
 export const DIRECTION_PRIORITY: readonly Direction[] = ["N", "S", "E", "W"];
 
-export type MoveAction = `MOVE_${Direction}`;
-export type AttackAction = `ATTACK_${Direction}`;
-export type PlayerAction = MoveAction | AttackAction | "USE_POTION" | "WAIT";
-export type EnemyAction = MoveAction | AttackAction | "WAIT";
+export type ItemId = "potion";
+
+export interface WaitAction {
+  kind: "WAIT";
+}
+
+export interface MoveAction {
+  kind: "MOVE";
+  direction: Direction;
+}
+
+export interface AttackAction {
+  kind: "ATTACK";
+  direction: Direction;
+}
+
+export interface UseItemAction {
+  kind: "USE_ITEM";
+  itemId: ItemId;
+}
+
+export type PlayerAction = WaitAction | MoveAction | AttackAction | UseItemAction;
+export type EnemyAction = WaitAction | MoveAction | AttackAction;
 export type Action = PlayerAction | EnemyAction;
-
-export const PLAYER_ACTION_PRIORITY: readonly PlayerAction[] = [
-  "MOVE_N",
-  "MOVE_S",
-  "MOVE_E",
-  "MOVE_W",
-  "ATTACK_N",
-  "ATTACK_S",
-  "ATTACK_E",
-  "ATTACK_W",
-  "USE_POTION",
-  "WAIT",
-];
-
-export const MOVE_ACTION_BY_DIRECTION: Record<Direction, MoveAction> = {
-  N: "MOVE_N",
-  S: "MOVE_S",
-  E: "MOVE_E",
-  W: "MOVE_W",
-};
-
-export const ATTACK_ACTION_BY_DIRECTION: Record<Direction, AttackAction> = {
-  N: "ATTACK_N",
-  S: "ATTACK_S",
-  E: "ATTACK_E",
-  W: "ATTACK_W",
-};
 
 export interface Position {
   x: number;

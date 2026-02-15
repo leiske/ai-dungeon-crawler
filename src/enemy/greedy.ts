@@ -1,8 +1,4 @@
-import {
-  ATTACK_ACTION_BY_DIRECTION,
-  DIRECTION_PRIORITY,
-  MOVE_ACTION_BY_DIRECTION,
-} from "../types.ts";
+import { createAttackAction, createMoveAction, WAIT_ACTION } from "../action-utils.ts";
 import {
   DIRECTION_DELTAS,
   getAdjacentDirection,
@@ -11,7 +7,8 @@ import {
   isWalkable,
   manhattanDistance,
 } from "../spatial.ts";
-import type { EnemyController, GameState, Player } from "../types.ts";
+import { DIRECTION_PRIORITY } from "../types.ts";
+import type { EnemyAction, EnemyController, GameState, Player } from "../types.ts";
 
 function sortPlayersByPriority(players: Player[], enemyX: number, enemyY: number): Player[] {
   return [...players].sort((a, b) => {
@@ -25,25 +22,25 @@ function sortPlayersByPriority(players: Player[], enemyX: number, enemyY: number
 }
 
 export class GreedyEnemyController implements EnemyController {
-  public chooseAction(state: GameState, enemyId: number) {
+  public chooseAction(state: GameState, enemyId: number): EnemyAction {
     const enemy = state.enemies.find((candidate) => candidate.id === enemyId);
     if (!enemy || enemy.hp <= 0) {
-      return "WAIT";
+      return WAIT_ACTION;
     }
 
     const alivePlayers = state.players.filter((player) => player.hp > 0);
     if (alivePlayers.length === 0) {
-      return "WAIT";
+      return WAIT_ACTION;
     }
 
     const [target] = sortPlayersByPriority(alivePlayers, enemy.x, enemy.y);
     if (!target) {
-      return "WAIT";
+      return WAIT_ACTION;
     }
 
     const adjacentDirection = getAdjacentDirection(enemy.x, enemy.y, target.x, target.y);
     if (adjacentDirection) {
-      return ATTACK_ACTION_BY_DIRECTION[adjacentDirection];
+      return createAttackAction(adjacentDirection);
     }
 
     const currentDistance = manhattanDistance(enemy.x, enemy.y, target.x, target.y);
@@ -66,10 +63,10 @@ export class GreedyEnemyController implements EnemyController {
 
       const nextDistance = manhattanDistance(nextX, nextY, target.x, target.y);
       if (nextDistance < currentDistance) {
-        return MOVE_ACTION_BY_DIRECTION[direction];
+        return createMoveAction(direction);
       }
     }
 
-    return "WAIT";
+    return WAIT_ACTION;
   }
 }

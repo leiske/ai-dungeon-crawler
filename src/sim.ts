@@ -1,16 +1,140 @@
+import {
+  isAttackAction,
+  isMoveAction,
+  isUseItemAction,
+  WAIT_ACTION,
+} from "./action-utils.ts";
+import { DIRECTION_DELTAS, isInBounds, isOccupiedByAliveEntity, isWall } from "./spatial.ts";
 import type {
+  Action,
+  ActorType,
   Enemy,
   EnemyAction,
-  GameState,
+  EnemyActionIntent,
   GameOutcome,
+  GameState,
+  InvalidActionReason,
   Metrics,
   Player,
   PlayerActionIntent,
   ScenarioDefinition,
   TransitionResult,
 } from "./types.ts";
-import { parseAttackDirection, parseMoveDirection } from "./action-utils.ts";
-import { DIRECTION_DELTAS, isInBounds, isOccupiedByAliveEntity, isWall } from "./spatial.ts";
+
+type EventList = TransitionResult["events"];
+
+interface MutableActorPosition {
+  id: number;
+  x: number;
+  y: number;
+}
+
+interface ResolveActionEventInput {
+  actorType: ActorType;
+  actorId: number;
+  requestedAction: Action;
+  appliedAction: Action;
+  valid: boolean;
+  invalidReason?: InvalidActionReason;
+}
+
+function pushResolvedActionEvent(events: EventList, input: ResolveActionEventInput): void {
+  events.push({
+    type: "ACTION_RESOLVED",
+    data: {
+      actorType: input.actorType,
+      actorId: input.actorId,
+      requestedAction: input.requestedAction,
+      appliedAction: input.appliedAction,
+      valid: input.valid,
+      invalidReason: input.invalidReason,
+    },
+  });
+}
+
+interface MoveActorInput {
+  state: GameState;
+  events: EventList;
+  actorType: ActorType;
+  actor: MutableActorPosition;
+  requestedAction: Action;
+  ignoreEnemyId?: number;
+  ignorePlayerId?: number;
+}
+
+function tryApplyMoveAction(input: MoveActorInput): boolean {
+  if (!isMoveAction(input.requestedAction)) {
+    return false;
+  }
+
+  const delta = DIRECTION_DELTAS[input.requestedAction.direction];
+  const targetX = input.actor.x + delta.dx;
+  const targetY = input.actor.y + delta.dy;
+
+  if (!isInBounds(input.state, targetX, targetY)) {
+    pushResolvedActionEvent(input.events, {
+      actorType: input.actorType,
+      actorId: input.actor.id,
+      requestedAction: input.requestedAction,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "OUT_OF_BOUNDS",
+    });
+    return true;
+  }
+
+  if (isWall(input.state, targetX, targetY)) {
+    pushResolvedActionEvent(input.events, {
+      actorType: input.actorType,
+      actorId: input.actor.id,
+      requestedAction: input.requestedAction,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "BLOCKED_BY_WALL",
+    });
+    return true;
+  }
+
+  if (
+    isOccupiedByAliveEntity(input.state, targetX, targetY, {
+      ignoreEnemyId: input.ignoreEnemyId,
+      ignorePlayerId: input.ignorePlayerId,
+    })
+  ) {
+    pushResolvedActionEvent(input.events, {
+      actorType: input.actorType,
+      actorId: input.actor.id,
+      requestedAction: input.requestedAction,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "BLOCKED_BY_ENTITY",
+    });
+    return true;
+  }
+
+  const fromX = input.actor.x;
+  const fromY = input.actor.y;
+  input.actor.x = targetX;
+  input.actor.y = targetY;
+
+  pushResolvedActionEvent(input.events, {
+    actorType: input.actorType,
+    actorId: input.actor.id,
+    requestedAction: input.requestedAction,
+    appliedAction: input.requestedAction,
+    valid: true,
+  });
+
+  input.events.push({
+    type: "MOVED",
+    actorType: input.actorType,
+    actorId: input.actor.id,
+    from: { x: fromX, y: fromY },
+    to: { x: targetX, y: targetY },
+  });
+
+  return true;
+}
 
 function clonePlayers(players: Player[]): Player[] {
   return players.map((player) => ({ ...player }));
@@ -90,7 +214,7 @@ export function applyPlayerPhase(
   playerIntents: PlayerActionIntent[],
 ): TransitionResult {
   const nextState = cloneState(state);
-  const events: TransitionResult["events"] = [];
+  const events: EventList = [];
 
   const sortedIntents = [...playerIntents].sort((a, b) => a.playerId - b.playerId);
 
@@ -98,143 +222,66 @@ export function applyPlayerPhase(
     const player = nextState.players.find((candidate) => candidate.id === intent.playerId);
 
     if (!player) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: intent.playerId,
-          requestedAction: intent.action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "ACTOR_NOT_FOUND",
-        },
+      pushResolvedActionEvent(events, {
+        actorType: "player",
+        actorId: intent.playerId,
+        requestedAction: intent.action,
+        appliedAction: WAIT_ACTION,
+        valid: false,
+        invalidReason: "ACTOR_NOT_FOUND",
       });
       continue;
     }
 
     if (player.hp <= 0) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: player.id,
-          requestedAction: intent.action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "ACTOR_DEAD",
-        },
-      });
-      continue;
-    }
-
-    if (intent.action === "WAIT") {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: player.id,
-          requestedAction: intent.action,
-          appliedAction: "WAIT",
-          valid: true,
-        },
-      });
-      continue;
-    }
-
-    const moveDirection = parseMoveDirection(intent.action);
-    if (moveDirection) {
-      const delta = DIRECTION_DELTAS[moveDirection];
-      const targetX = player.x + delta.dx;
-      const targetY = player.y + delta.dy;
-
-      if (!isInBounds(nextState, targetX, targetY)) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "OUT_OF_BOUNDS",
-          },
-        });
-        continue;
-      }
-
-      if (isWall(nextState, targetX, targetY)) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "BLOCKED_BY_WALL",
-          },
-        });
-        continue;
-      }
-
-      if (isOccupiedByAliveEntity(nextState, targetX, targetY, { ignorePlayerId: player.id })) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "BLOCKED_BY_ENTITY",
-          },
-        });
-        continue;
-      }
-
-      const fromX = player.x;
-      const fromY = player.y;
-      player.x = targetX;
-      player.y = targetY;
-
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: player.id,
-          requestedAction: intent.action,
-          appliedAction: intent.action,
-          valid: true,
-        },
-      });
-
-      events.push({
-        type: "MOVED",
+      pushResolvedActionEvent(events, {
         actorType: "player",
         actorId: player.id,
-        from: { x: fromX, y: fromY },
-        to: { x: targetX, y: targetY },
+        requestedAction: intent.action,
+        appliedAction: WAIT_ACTION,
+        valid: false,
+        invalidReason: "ACTOR_DEAD",
       });
       continue;
     }
 
-    const attackDirection = parseAttackDirection(intent.action);
-    if (attackDirection) {
-      const delta = DIRECTION_DELTAS[attackDirection];
+    if (intent.action.kind === "WAIT") {
+      pushResolvedActionEvent(events, {
+        actorType: "player",
+        actorId: player.id,
+        requestedAction: intent.action,
+        appliedAction: WAIT_ACTION,
+        valid: true,
+      });
+      continue;
+    }
+
+    if (
+      tryApplyMoveAction({
+        state: nextState,
+        events,
+        actorType: "player",
+        actor: player,
+        requestedAction: intent.action,
+        ignorePlayerId: player.id,
+      })
+    ) {
+      continue;
+    }
+
+    if (isAttackAction(intent.action)) {
+      const delta = DIRECTION_DELTAS[intent.action.direction];
       const targetX = player.x + delta.dx;
       const targetY = player.y + delta.dy;
 
       if (!isInBounds(nextState, targetX, targetY)) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "OUT_OF_BOUNDS",
-          },
+        pushResolvedActionEvent(events, {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: WAIT_ACTION,
+          valid: false,
+          invalidReason: "OUT_OF_BOUNDS",
         });
         continue;
       }
@@ -244,16 +291,13 @@ export function applyPlayerPhase(
       );
 
       if (!targetEnemy) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "NO_TARGET",
-          },
+        pushResolvedActionEvent(events, {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: WAIT_ACTION,
+          valid: false,
+          invalidReason: "NO_TARGET",
         });
         continue;
       }
@@ -262,15 +306,12 @@ export function applyPlayerPhase(
       targetEnemy.hp -= damage;
       nextState.metrics.damageDealt += damage;
 
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: player.id,
-          requestedAction: intent.action,
-          appliedAction: intent.action,
-          valid: true,
-        },
+      pushResolvedActionEvent(events, {
+        actorType: "player",
+        actorId: player.id,
+        requestedAction: intent.action,
+        appliedAction: intent.action,
+        valid: true,
       });
 
       events.push({
@@ -294,18 +335,27 @@ export function applyPlayerPhase(
       continue;
     }
 
-    if (intent.action === "USE_POTION") {
+    if (isUseItemAction(intent.action)) {
+      if (intent.action.itemId !== "potion") {
+        pushResolvedActionEvent(events, {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: WAIT_ACTION,
+          valid: false,
+          invalidReason: "NO_POTION",
+        });
+        continue;
+      }
+
       if (player.potionCount <= 0) {
-        events.push({
-          type: "ACTION_RESOLVED",
-          data: {
-            actorType: "player",
-            actorId: player.id,
-            requestedAction: intent.action,
-            appliedAction: "WAIT",
-            valid: false,
-            invalidReason: "NO_POTION",
-          },
+        pushResolvedActionEvent(events, {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: WAIT_ACTION,
+          valid: false,
+          invalidReason: "NO_POTION",
         });
         continue;
       }
@@ -315,15 +365,12 @@ export function applyPlayerPhase(
       player.hp += healAmount;
       nextState.metrics.potionsUsed += 1;
 
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "player",
-          actorId: player.id,
-          requestedAction: intent.action,
-          appliedAction: intent.action,
-          valid: true,
-        },
+      pushResolvedActionEvent(events, {
+        actorType: "player",
+        actorId: player.id,
+        requestedAction: intent.action,
+        appliedAction: intent.action,
+        valid: true,
       });
 
       events.push({
@@ -336,16 +383,13 @@ export function applyPlayerPhase(
       continue;
     }
 
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "player",
-        actorId: player.id,
-        requestedAction: intent.action,
-        appliedAction: "WAIT",
-        valid: false,
-        invalidReason: "NO_TARGET",
-      },
+    pushResolvedActionEvent(events, {
+      actorType: "player",
+      actorId: player.id,
+      requestedAction: intent.action,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "NO_TARGET",
     });
   }
 
@@ -355,191 +399,104 @@ export function applyPlayerPhase(
   };
 }
 
-export function applyEnemyAction(
-  state: GameState,
-  enemyId: number,
-  action: EnemyAction,
-): TransitionResult {
-  const nextState = cloneState(state);
-  const events: TransitionResult["events"] = [];
-
-  const enemy = nextState.enemies.find((candidate) => candidate.id === enemyId);
+function applyEnemyIntentToDraft(
+  draftState: GameState,
+  events: EventList,
+  intent: EnemyActionIntent,
+): void {
+  const enemy = draftState.enemies.find((candidate) => candidate.id === intent.enemyId);
 
   if (!enemy) {
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "enemy",
-        actorId: enemyId,
-        requestedAction: action,
-        appliedAction: "WAIT",
-        valid: false,
-        invalidReason: "ACTOR_NOT_FOUND",
-      },
+    pushResolvedActionEvent(events, {
+      actorType: "enemy",
+      actorId: intent.enemyId,
+      requestedAction: intent.action,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "ACTOR_NOT_FOUND",
     });
-    return { state: nextState, events };
+    return;
   }
 
   if (enemy.hp <= 0) {
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "enemy",
-        actorId: enemy.id,
-        requestedAction: action,
-        appliedAction: "WAIT",
-        valid: false,
-        invalidReason: "ACTOR_DEAD",
-      },
-    });
-    return { state: nextState, events };
-  }
-
-  if (action === "WAIT") {
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "enemy",
-        actorId: enemy.id,
-        requestedAction: action,
-        appliedAction: "WAIT",
-        valid: true,
-      },
-    });
-    return { state: nextState, events };
-  }
-
-  const moveDirection = parseMoveDirection(action);
-  if (moveDirection) {
-    const delta = DIRECTION_DELTAS[moveDirection];
-    const targetX = enemy.x + delta.dx;
-    const targetY = enemy.y + delta.dy;
-
-    if (!isInBounds(nextState, targetX, targetY)) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "enemy",
-          actorId: enemy.id,
-          requestedAction: action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "OUT_OF_BOUNDS",
-        },
-      });
-      return { state: nextState, events };
-    }
-
-    if (isWall(nextState, targetX, targetY)) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "enemy",
-          actorId: enemy.id,
-          requestedAction: action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "BLOCKED_BY_WALL",
-        },
-      });
-      return { state: nextState, events };
-    }
-
-    if (isOccupiedByAliveEntity(nextState, targetX, targetY, { ignoreEnemyId: enemy.id })) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "enemy",
-          actorId: enemy.id,
-          requestedAction: action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "BLOCKED_BY_ENTITY",
-        },
-      });
-      return { state: nextState, events };
-    }
-
-    const fromX = enemy.x;
-    const fromY = enemy.y;
-    enemy.x = targetX;
-    enemy.y = targetY;
-
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "enemy",
-        actorId: enemy.id,
-        requestedAction: action,
-        appliedAction: action,
-        valid: true,
-      },
-    });
-
-    events.push({
-      type: "MOVED",
+    pushResolvedActionEvent(events, {
       actorType: "enemy",
       actorId: enemy.id,
-      from: { x: fromX, y: fromY },
-      to: { x: targetX, y: targetY },
+      requestedAction: intent.action,
+      appliedAction: WAIT_ACTION,
+      valid: false,
+      invalidReason: "ACTOR_DEAD",
     });
-
-    return { state: nextState, events };
+    return;
   }
 
-  const attackDirection = parseAttackDirection(action);
-  if (attackDirection) {
-    const delta = DIRECTION_DELTAS[attackDirection];
+  if (intent.action.kind === "WAIT") {
+    pushResolvedActionEvent(events, {
+      actorType: "enemy",
+      actorId: enemy.id,
+      requestedAction: intent.action,
+      appliedAction: WAIT_ACTION,
+      valid: true,
+    });
+    return;
+  }
+
+  if (
+    tryApplyMoveAction({
+      state: draftState,
+      events,
+      actorType: "enemy",
+      actor: enemy,
+      requestedAction: intent.action,
+      ignoreEnemyId: enemy.id,
+    })
+  ) {
+    return;
+  }
+
+  if (isAttackAction(intent.action)) {
+    const delta = DIRECTION_DELTAS[intent.action.direction];
     const targetX = enemy.x + delta.dx;
     const targetY = enemy.y + delta.dy;
 
-    if (!isInBounds(nextState, targetX, targetY)) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "enemy",
-          actorId: enemy.id,
-          requestedAction: action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "OUT_OF_BOUNDS",
-        },
+    if (!isInBounds(draftState, targetX, targetY)) {
+      pushResolvedActionEvent(events, {
+        actorType: "enemy",
+        actorId: enemy.id,
+        requestedAction: intent.action,
+        appliedAction: WAIT_ACTION,
+        valid: false,
+        invalidReason: "OUT_OF_BOUNDS",
       });
-      return { state: nextState, events };
+      return;
     }
 
-    const targetPlayer = nextState.players.find(
+    const targetPlayer = draftState.players.find(
       (player) => player.hp > 0 && player.x === targetX && player.y === targetY,
     );
 
     if (!targetPlayer) {
-      events.push({
-        type: "ACTION_RESOLVED",
-        data: {
-          actorType: "enemy",
-          actorId: enemy.id,
-          requestedAction: action,
-          appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "NO_TARGET",
-        },
+      pushResolvedActionEvent(events, {
+        actorType: "enemy",
+        actorId: enemy.id,
+        requestedAction: intent.action,
+        appliedAction: WAIT_ACTION,
+        valid: false,
+        invalidReason: "NO_TARGET",
       });
-      return { state: nextState, events };
+      return;
     }
 
     const damage = Math.min(enemy.attackDamage, targetPlayer.hp);
     targetPlayer.hp -= damage;
-    nextState.metrics.damageTaken += damage;
+    draftState.metrics.damageTaken += damage;
 
-    events.push({
-      type: "ACTION_RESOLVED",
-      data: {
-        actorType: "enemy",
-        actorId: enemy.id,
-        requestedAction: action,
-        appliedAction: action,
-        valid: true,
-      },
+    pushResolvedActionEvent(events, {
+      actorType: "enemy",
+      actorId: enemy.id,
+      requestedAction: intent.action,
+      appliedAction: intent.action,
+      valid: true,
     });
 
     events.push({
@@ -560,19 +517,30 @@ export function applyEnemyAction(
       });
     }
 
-    return { state: nextState, events };
+    return;
   }
 
-  events.push({
-    type: "ACTION_RESOLVED",
-    data: {
-      actorType: "enemy",
-      actorId: enemy.id,
-      requestedAction: action,
-      appliedAction: "WAIT",
-      valid: false,
-      invalidReason: "NO_TARGET",
-    },
+  pushResolvedActionEvent(events, {
+    actorType: "enemy",
+    actorId: enemy.id,
+    requestedAction: intent.action,
+    appliedAction: WAIT_ACTION,
+    valid: false,
+    invalidReason: "NO_TARGET",
+  });
+}
+
+export function applyEnemyAction(
+  state: GameState,
+  enemyId: number,
+  action: EnemyAction,
+): TransitionResult {
+  const nextState = cloneState(state);
+  const events: EventList = [];
+
+  applyEnemyIntentToDraft(nextState, events, {
+    enemyId,
+    action,
   });
 
   return {
@@ -606,7 +574,7 @@ function computeOutcome(state: GameState): GameOutcome {
 
 export function finalizeTurn(state: GameState): TransitionResult {
   const nextState = cloneState(state);
-  const events: TransitionResult["events"] = [];
+  const events: EventList = [];
 
   nextState.turn += 1;
   nextState.metrics.turnsSurvived = nextState.turn;
