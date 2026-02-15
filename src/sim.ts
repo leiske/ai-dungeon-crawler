@@ -127,7 +127,7 @@ export function applyPlayerPhase(
       continue;
     }
 
-    if (intent.action !== "WAIT") {
+    if (intent.action === "WAIT") {
       events.push({
         type: "ACTION_RESOLVED",
         data: {
@@ -135,9 +135,203 @@ export function applyPlayerPhase(
           actorId: player.id,
           requestedAction: intent.action,
           appliedAction: "WAIT",
-          valid: false,
-          invalidReason: "NO_TARGET",
+          valid: true,
         },
+      });
+      continue;
+    }
+
+    const moveDirection = parseMoveDirection(intent.action);
+    if (moveDirection) {
+      const delta = DIRECTION_DELTAS[moveDirection];
+      const targetX = player.x + delta.dx;
+      const targetY = player.y + delta.dy;
+
+      if (!isInBounds(nextState, targetX, targetY)) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "OUT_OF_BOUNDS",
+          },
+        });
+        continue;
+      }
+
+      if (isWall(nextState, targetX, targetY)) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "BLOCKED_BY_WALL",
+          },
+        });
+        continue;
+      }
+
+      if (isOccupiedByAliveEntity(nextState, targetX, targetY, { ignorePlayerId: player.id })) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "BLOCKED_BY_ENTITY",
+          },
+        });
+        continue;
+      }
+
+      const fromX = player.x;
+      const fromY = player.y;
+      player.x = targetX;
+      player.y = targetY;
+
+      events.push({
+        type: "ACTION_RESOLVED",
+        data: {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: intent.action,
+          valid: true,
+        },
+      });
+
+      events.push({
+        type: "MOVED",
+        actorType: "player",
+        actorId: player.id,
+        from: { x: fromX, y: fromY },
+        to: { x: targetX, y: targetY },
+      });
+      continue;
+    }
+
+    const attackDirection = parseAttackDirection(intent.action);
+    if (attackDirection) {
+      const delta = DIRECTION_DELTAS[attackDirection];
+      const targetX = player.x + delta.dx;
+      const targetY = player.y + delta.dy;
+
+      if (!isInBounds(nextState, targetX, targetY)) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "OUT_OF_BOUNDS",
+          },
+        });
+        continue;
+      }
+
+      const targetEnemy = nextState.enemies.find(
+        (enemy) => enemy.hp > 0 && enemy.x === targetX && enemy.y === targetY,
+      );
+
+      if (!targetEnemy) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "NO_TARGET",
+          },
+        });
+        continue;
+      }
+
+      const damage = Math.min(nextState.rules.playerAttackDamage, targetEnemy.hp);
+      targetEnemy.hp -= damage;
+      nextState.metrics.damageDealt += damage;
+
+      events.push({
+        type: "ACTION_RESOLVED",
+        data: {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: intent.action,
+          valid: true,
+        },
+      });
+
+      events.push({
+        type: "ATTACK",
+        attackerType: "player",
+        attackerId: player.id,
+        targetType: "enemy",
+        targetId: targetEnemy.id,
+        damage,
+        targetHpAfter: targetEnemy.hp,
+      });
+
+      if (targetEnemy.hp <= 0) {
+        nextState.metrics.enemiesKilled += 1;
+        events.push({
+          type: "DEATH",
+          actorType: "enemy",
+          actorId: targetEnemy.id,
+        });
+      }
+      continue;
+    }
+
+    if (intent.action === "USE_POTION") {
+      if (player.potionCount <= 0) {
+        events.push({
+          type: "ACTION_RESOLVED",
+          data: {
+            actorType: "player",
+            actorId: player.id,
+            requestedAction: intent.action,
+            appliedAction: "WAIT",
+            valid: false,
+            invalidReason: "NO_POTION",
+          },
+        });
+        continue;
+      }
+
+      player.potionCount -= 1;
+      const healAmount = Math.min(nextState.rules.potionHealAmount, player.maxHp - player.hp);
+      player.hp += healAmount;
+      nextState.metrics.potionsUsed += 1;
+
+      events.push({
+        type: "ACTION_RESOLVED",
+        data: {
+          actorType: "player",
+          actorId: player.id,
+          requestedAction: intent.action,
+          appliedAction: intent.action,
+          valid: true,
+        },
+      });
+
+      events.push({
+        type: "HEALED",
+        actorType: "player",
+        actorId: player.id,
+        amount: healAmount,
+        hpAfter: player.hp,
       });
       continue;
     }
@@ -149,7 +343,8 @@ export function applyPlayerPhase(
         actorId: player.id,
         requestedAction: intent.action,
         appliedAction: "WAIT",
-        valid: true,
+        valid: false,
+        invalidReason: "NO_TARGET",
       },
     });
   }
