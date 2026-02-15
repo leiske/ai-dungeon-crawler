@@ -1,14 +1,13 @@
 import { getObservation } from "./observation.ts";
-import { render } from "./render.ts";
+import type { EpisodeEvent, EpisodeEventHandler } from "./episode-events.ts";
 import {
   applyEnemyAction,
   applyPlayerPhase,
+  cloneState,
   createInitialState,
   finalizeTurn,
 } from "./sim.ts";
 import type {
-  Action,
-  ActorType,
   EnemyController,
   EpisodeResult,
   PlayerActionIntent,
@@ -17,27 +16,13 @@ import type {
   SimulationEvent,
 } from "./types.ts";
 
-export type EpisodeStepPhase =
-  | "PLAYER_ACTION_APPLIED"
-  | "ENEMY_ACTION_APPLIED";
-
-export interface EpisodeStep {
-  turn: number;
-  phase: EpisodeStepPhase;
-  actorType?: ActorType;
-  actorId?: number;
-  action?: Action;
-  events: SimulationEvent[];
-  board: string;
-}
-
 export interface RunEpisodeOptions {
   scenario: ScenarioDefinition;
   seed: number;
   playerPolicy: PlayerPolicy;
   enemyController: EnemyController;
   traceEnabled?: boolean;
-  onStep?: (step: EpisodeStep) => void | Promise<void>;
+  onEvent?: EpisodeEventHandler;
 }
 
 function assertTerminalOutcome(
@@ -53,15 +38,15 @@ function sortById<T extends { id: number }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.id - b.id);
 }
 
-async function emitEpisodeStep(
+async function emitEpisodeEvent(
   options: RunEpisodeOptions,
-  step: EpisodeStep,
+  event: EpisodeEvent,
 ): Promise<void> {
-  if (!options.onStep) {
+  if (!options.onEvent) {
     return;
   }
 
-  await options.onStep(step);
+  await options.onEvent(event);
 }
 
 export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeResult> {
@@ -74,6 +59,13 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     turns: [],
   };
 
+  await emitEpisodeEvent(options, {
+    type: "EPISODE_STARTED",
+    scenarioId: options.scenario.id,
+    seed: options.seed,
+    state: cloneState(state),
+  });
+
   while (state.outcome === "ONGOING") {
     const turnEvents: SimulationEvent[] = [];
     const turnNumber = state.turn;
@@ -82,8 +74,22 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     const playerIntents: PlayerActionIntent[] = [];
 
     for (const player of alivePlayers) {
+      await emitEpisodeEvent(options, {
+        type: "PLAYER_ACTION_REQUESTED",
+        turn: turnNumber,
+        playerId: player.id,
+      });
+
       const observation = getObservation(state, player.id);
       const action = await options.playerPolicy.chooseAction(observation);
+
+      await emitEpisodeEvent(options, {
+        type: "PLAYER_ACTION_CHOSEN",
+        turn: turnNumber,
+        playerId: player.id,
+        action,
+      });
+
       playerIntents.push({
         playerId: player.id,
         action,
@@ -95,14 +101,13 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
       state = playerPhaseResult.state;
       turnEvents.push(...playerPhaseResult.events);
 
-      await emitEpisodeStep(options, {
+      await emitEpisodeEvent(options, {
+        type: "PLAYER_ACTION_APPLIED",
         turn: turnNumber,
-        phase: "PLAYER_ACTION_APPLIED",
-        actorType: "player",
-        actorId: playerIntent.playerId,
+        playerId: playerIntent.playerId,
         action: playerIntent.action,
         events: playerPhaseResult.events,
-        board: render(state),
+        state: cloneState(state),
       });
     }
 
@@ -110,18 +115,25 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
 
     for (const enemy of aliveEnemies) {
       const enemyAction = options.enemyController.chooseAction(state, enemy.id);
+
+      await emitEpisodeEvent(options, {
+        type: "ENEMY_ACTION_CHOSEN",
+        turn: turnNumber,
+        enemyId: enemy.id,
+        action: enemyAction,
+      });
+
       const enemyResult = applyEnemyAction(state, enemy.id, enemyAction);
       state = enemyResult.state;
       turnEvents.push(...enemyResult.events);
 
-      await emitEpisodeStep(options, {
+      await emitEpisodeEvent(options, {
+        type: "ENEMY_ACTION_APPLIED",
         turn: turnNumber,
-        phase: "ENEMY_ACTION_APPLIED",
-        actorType: "enemy",
-        actorId: enemy.id,
+        enemyId: enemy.id,
         action: enemyAction,
         events: enemyResult.events,
-        board: render(state),
+        state: cloneState(state),
       });
     }
 
@@ -129,29 +141,44 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     state = finalizationResult.state;
     turnEvents.push(...finalizationResult.events);
 
-    const finalizedBoard = render(state);
+    await emitEpisodeEvent(options, {
+      type: "TURN_FINALIZED",
+      turn: state.turn,
+      events: finalizationResult.events,
+      state: cloneState(state),
+    });
 
     if (traceEnabled) {
       trace.turns.push({
         turn: turnNumber,
         events: turnEvents,
-        board: finalizedBoard,
       });
     }
   }
 
+  const outcome = assertTerminalOutcome(state.outcome);
+  const metrics = {
+    win: state.metrics.win,
+    turnsSurvived: state.metrics.turnsSurvived,
+    damageTaken: state.metrics.damageTaken,
+    damageDealt: state.metrics.damageDealt,
+    potionsUsed: state.metrics.potionsUsed,
+    enemiesKilled: state.metrics.enemiesKilled,
+  };
+
+  await emitEpisodeEvent(options, {
+    type: "EPISODE_FINISHED",
+    turn: state.turn,
+    outcome,
+    metrics,
+    state: cloneState(state),
+  });
+
   return {
     scenarioId: options.scenario.id,
     seed: options.seed,
-    outcome: assertTerminalOutcome(state.outcome),
-    metrics: {
-      win: state.metrics.win,
-      turnsSurvived: state.metrics.turnsSurvived,
-      damageTaken: state.metrics.damageTaken,
-      damageDealt: state.metrics.damageDealt,
-      potionsUsed: state.metrics.potionsUsed,
-      enemiesKilled: state.metrics.enemiesKilled,
-    },
+    outcome,
+    metrics,
     finalState: state,
     trace,
   };
@@ -169,7 +196,7 @@ export async function runEpisodes(
       playerPolicy: options.playerPolicy,
       enemyController: options.enemyController,
       traceEnabled: options.traceEnabled,
-      onStep: options.onStep,
+      onEvent: options.onEvent,
     });
     results.push(result);
   }

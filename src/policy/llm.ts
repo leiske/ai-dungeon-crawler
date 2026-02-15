@@ -1,7 +1,8 @@
-import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AssistantMessage, ThinkingLevel } from "@mariozechner/pi-ai";
 import { z } from "zod";
 import { createAttackAction, createMoveAction, createUseItemAction, WAIT_ACTION } from "../action-utils.ts";
+import type { LlmEvent, LlmEventHandler } from "../llm-events.ts";
 import { getOpenAICodexApiKey } from "../llm/auth.ts";
 import type { Observation, PlayerAction, PlayerPolicy } from "../types.ts";
 
@@ -107,6 +108,7 @@ export interface CodexPolicyOptions {
   authPath?: string;
   reasoning?: ThinkingLevel;
   onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
+  onEvent?: LlmEventHandler;
 }
 
 interface ParseActionResult {
@@ -593,11 +595,13 @@ export class LlmCodexPolicy implements PlayerPolicy {
   private readonly authPath?: string;
   private readonly reasoning: ThinkingLevel;
   private readonly onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
+  private readonly onEvent?: LlmEventHandler;
 
   public constructor(options: CodexPolicyOptions = {}) {
     this.authPath = options.authPath;
     this.reasoning = options.reasoning ?? "low";
     this.onDecision = options.onDecision;
+    this.onEvent = options.onEvent;
   }
 
   public getDecisionTrace(): readonly LlmDecisionTrace[] {
@@ -620,14 +624,33 @@ export class LlmCodexPolicy implements PlayerPolicy {
     }
   }
 
+  private async emitEvent(event: LlmEvent): Promise<void> {
+    if (!this.onEvent) {
+      return;
+    }
+
+    try {
+      await this.onEvent(event);
+    } catch {
+      // Live event rendering must never break action selection.
+    }
+  }
+
   public async chooseAction(observation: Observation): Promise<PlayerAction> {
     const startedAt = Date.now();
+    const playerId = observation.self.id;
     const promptMemory = selectMemoryForPrompt(this.memory, observation.turn);
     const prompt = buildPrompt(observation, promptMemory);
 
+    await this.emitEvent({
+      type: "LLM_REQUEST_STARTED",
+      turn: observation.turn,
+      playerId,
+    });
+
     try {
       const { apiKey } = await getOpenAICodexApiKey(this.authPath);
-      const response = await completeSimple(
+      const stream = streamSimple(
         this.model,
         {
           systemPrompt: SYSTEM_PROMPT,
@@ -645,6 +668,63 @@ export class LlmCodexPolicy implements PlayerPolicy {
           maxTokens: 320,
         },
       );
+
+      for await (const event of stream) {
+        switch (event.type) {
+          case "thinking_start":
+            await this.emitEvent({
+              type: "LLM_THINKING_STARTED",
+              turn: observation.turn,
+              playerId,
+            });
+            break;
+          case "thinking_delta":
+            if (event.delta.length > 0) {
+              await this.emitEvent({
+                type: "LLM_THINKING_DELTA",
+                turn: observation.turn,
+                playerId,
+                delta: event.delta,
+              });
+            }
+            break;
+          case "thinking_end":
+            await this.emitEvent({
+              type: "LLM_THINKING_ENDED",
+              turn: observation.turn,
+              playerId,
+            });
+            break;
+          case "text_start":
+            await this.emitEvent({
+              type: "LLM_OUTPUT_STARTED",
+              turn: observation.turn,
+              playerId,
+            });
+            break;
+          case "text_delta":
+            if (event.delta.length > 0) {
+              await this.emitEvent({
+                type: "LLM_OUTPUT_DELTA",
+                turn: observation.turn,
+                playerId,
+                delta: event.delta,
+              });
+            }
+            break;
+          case "text_end":
+            await this.emitEvent({
+              type: "LLM_OUTPUT_ENDED",
+              turn: observation.turn,
+              playerId,
+            });
+            break;
+          default:
+            break;
+        }
+      }
+
+      const response = await stream.result();
 
       const { text: rawResponse, thinking } = extractMessageContent(response);
       const stopReason = response.stopReason;
@@ -691,8 +771,26 @@ export class LlmCodexPolicy implements PlayerPolicy {
       this.decisionTrace.push(trace);
       await this.emitDecision(trace);
 
+      await this.emitEvent({
+        type: "LLM_REQUEST_COMPLETED",
+        turn: observation.turn,
+        playerId,
+        action,
+        latencyMs: trace.latencyMs,
+        stopReason,
+        whyThisAction: trace.decision?.whyThisAction,
+        confidence: trace.decision?.confidence,
+        tokenUsage: trace.tokenUsage,
+        issue:
+          trace.fallbackReason ??
+          trace.decisionParseError ??
+          trace.memoryParseError ??
+          trace.modelErrorMessage,
+      });
+
       return action;
     } catch (error) {
+      const message = describeError(error);
       const trace: LlmDecisionTrace = {
         turn: observation.turn,
         action: WAIT_ACTION,
@@ -701,8 +799,8 @@ export class LlmCodexPolicy implements PlayerPolicy {
         rawResponse: "",
         thinking: [],
         stopReason: "error",
-        modelErrorMessage: describeError(error),
-        fallbackReason: `llm_error: ${describeError(error)}`,
+        modelErrorMessage: message,
+        fallbackReason: `llm_error: ${message}`,
         tokenUsage: {
           input: 0,
           output: 0,
@@ -712,6 +810,13 @@ export class LlmCodexPolicy implements PlayerPolicy {
 
       this.decisionTrace.push(trace);
       await this.emitDecision(trace);
+
+      await this.emitEvent({
+        type: "LLM_REQUEST_FAILED",
+        turn: observation.turn,
+        playerId,
+        message,
+      });
 
       return WAIT_ACTION;
     }

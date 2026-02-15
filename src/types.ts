@@ -201,7 +201,6 @@ export interface TransitionResult {
 export interface TurnTrace {
   turn: number;
   events: SimulationEvent[];
-  board: string;
 }
 
 export interface EpisodeTrace {

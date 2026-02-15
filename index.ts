@@ -1,9 +1,9 @@
 import { GreedyEnemyController } from "./src/enemy/greedy.ts";
 import { LlmCodexPolicy } from "./src/policy/llm.ts";
 import type { LlmDecisionTrace } from "./src/policy/llm.ts";
-import type { EpisodeStep } from "./src/run.ts";
 import { runEpisode } from "./src/run.ts";
 import { createScenario } from "./src/scenario.ts";
+import { TerminalMapRenderer } from "./src/terminal-map-renderer.ts";
 import type { ScenarioDefinition } from "./src/types.ts";
 
 interface CliOptions {
@@ -97,24 +97,6 @@ function formatMetrics(metrics: {
   ].join(", ");
 }
 
-function formatStepHeader(step: EpisodeStep): string {
-  return `Turn ${step.turn} | ${step.phase} | ${step.actorType ?? "unknown"}#${step.actorId ?? "unknown"} | action=${JSON.stringify(step.action)}`;
-}
-
-function printStep(step: EpisodeStep): void {
-  console.log(formatStepHeader(step));
-  console.log(step.board);
-  console.log("Events:");
-  if (step.events.length === 0) {
-    console.log("- none");
-  } else {
-    for (const event of step.events) {
-      console.log(`- ${JSON.stringify(event)}`);
-    }
-  }
-  console.log("");
-}
-
 function formatAction(action: LlmDecisionTrace["action"]): string {
   switch (action.kind) {
     case "MOVE":
@@ -198,24 +180,32 @@ export async function main(): Promise<void> {
   const options = parseCliOptions(Bun.argv.slice(2));
   const seed = 42;
   const scenario = applyScenarioOverrides(createScenario(seed), options);
-  const verboseStepTrace = !options.minimalLogs;
+  const boardViewEnabled = !options.minimalLogs;
+  const renderer = boardViewEnabled ? new TerminalMapRenderer() : undefined;
   const playerPolicy = new LlmCodexPolicy({
     reasoning: "low",
-    onDecision: logLiveDecision,
+    onDecision: options.minimalLogs ? logLiveDecision : undefined,
+    onEvent: renderer ? (event) => renderer.consumeLlmEvent(event) : undefined,
   });
 
-  const result = await runEpisode({
-    scenario,
-    seed,
-    playerPolicy,
-    enemyController: new GreedyEnemyController(),
-    traceEnabled: true,
-    onStep: verboseStepTrace ? printStep : undefined,
-  });
+  const result = await (async () => {
+    try {
+      return await runEpisode({
+        scenario,
+        seed,
+        playerPolicy,
+        enemyController: new GreedyEnemyController(),
+        traceEnabled: true,
+        onEvent: renderer ? (event) => renderer.consume(event) : undefined,
+      });
+    } finally {
+      renderer?.dispose();
+    }
+  })();
 
   console.log(`Scenario: ${result.scenarioId}`);
   console.log(`Seed: ${result.seed}`);
-  console.log(`View: ${verboseStepTrace ? "board+llm" : "llm-only"}`);
+  console.log(`View: ${boardViewEnabled ? "board" : "llm-only"}`);
   console.log("");
 
   console.log("LLM Decisions:");
