@@ -1,5 +1,5 @@
 import type { EpisodeEvent } from "./episode-events.ts";
-import type { LlmEvent } from "./llm-events.ts";
+import type { LlmEvent, LlmJournalMemoryEntry, LlmWorkingMemoryEntry } from "./llm-events.ts";
 import { render } from "./render.ts";
 import type { Action, GameState, SimulationEvent } from "./types.ts";
 
@@ -11,6 +11,10 @@ const MAX_COMBAT_LOG_LINES = 14;
 const MAX_LLM_CURRENT_THINKING_LINES = 4;
 const MAX_LLM_HISTORY_ROWS = 8;
 const MAX_LLM_ANNOTATION_LENGTH = 74;
+const MAX_MEMORY_WORKING_LINES = 6;
+const MAX_MEMORY_JOURNAL_LINES = 6;
+const MAX_MEMORY_COMMIT_ROWS = 8;
+const MAX_MEMORY_COMMIT_ANNOTATION_LENGTH = 78;
 const MIN_THINKING_SEGMENT_LENGTH = 36;
 const MAX_THINKING_SEGMENT_LENGTH = 92;
 
@@ -27,11 +31,18 @@ interface LlmPaneModel {
   recentRows: readonly string[];
 }
 
+interface MemoryPaneModel {
+  working: readonly LlmWorkingMemoryEntry[];
+  journal: readonly LlmJournalMemoryEntry[];
+  recentCommitRows: readonly string[];
+}
+
 interface FrameModel {
   state: GameState;
   statusLine: string;
   combatLog: readonly string[];
   llm: LlmPaneModel;
+  memory: MemoryPaneModel;
 }
 
 function isInteractiveTerminal(): boolean {
@@ -299,6 +310,74 @@ function buildLlmPaneLines(model: LlmPaneModel, rightWidth: number): string[] {
   ];
 }
 
+function sortMemoryEntriesByPriority<T extends { turn: number; salience: number }>(
+  entries: readonly T[],
+): T[] {
+  return [...entries].sort((left, right) => {
+    if (right.turn !== left.turn) {
+      return right.turn - left.turn;
+    }
+    return right.salience - left.salience;
+  });
+}
+
+function formatMemoryStateLine(entry: {
+  turn: number;
+  kind: string;
+  salience: number;
+  confidence: number;
+  text: string;
+}): string {
+  return `- t${entry.turn} ${entry.kind} s${entry.salience.toFixed(2)} c${entry.confidence.toFixed(2)} ${entry.text}`;
+}
+
+function buildWorkingMemoryPaneLines(entries: readonly LlmWorkingMemoryEntry[], width: number): string[] {
+  const lines: string[] = ["Working Memory"];
+  const visible = sortMemoryEntriesByPriority(entries).slice(0, MAX_MEMORY_WORKING_LINES);
+
+  if (visible.length === 0) {
+    lines.push("- none");
+    return lines;
+  }
+
+  for (const entry of visible) {
+    lines.push(...wrapLine(formatMemoryStateLine(entry), width));
+  }
+
+  return lines;
+}
+
+function buildJournalMemoryPaneLines(entries: readonly LlmJournalMemoryEntry[], width: number): string[] {
+  const lines: string[] = ["Long-Term Memory"];
+  const visible = sortMemoryEntriesByPriority(entries).slice(0, MAX_MEMORY_JOURNAL_LINES);
+
+  if (visible.length === 0) {
+    lines.push("- none");
+    return lines;
+  }
+
+  for (const entry of visible) {
+    lines.push(...wrapLine(formatMemoryStateLine(entry), width));
+  }
+
+  return lines;
+}
+
+function buildMemoryCommitLines(rows: readonly string[], width: number): string[] {
+  const lines: string[] = ["Recent Memory Commits"];
+
+  if (rows.length === 0) {
+    lines.push("- none");
+    return lines;
+  }
+
+  for (const row of rows) {
+    lines.push(...wrapLine(`- ${row}`, width));
+  }
+
+  return lines;
+}
+
 function buildFrame(model: FrameModel): string {
   const terminalWidth = getTerminalWidth();
   const displayWidth = terminalWidth > 0 ? terminalWidth : 120;
@@ -312,7 +391,24 @@ function buildFrame(model: FrameModel): string {
     bottomLayout,
   );
 
-  return `${topLines.join("\n")}\n${bottomLines}`;
+  const memoryLayout = computeBottomLayout(displayWidth);
+  const memoryColumns = mergeColumns(
+    buildWorkingMemoryPaneLines(model.memory.working, memoryLayout.leftWidth),
+    buildJournalMemoryPaneLines(model.memory.journal, memoryLayout.rightWidth),
+    memoryLayout,
+  );
+
+  const memoryCommitLines = buildMemoryCommitLines(model.memory.recentCommitRows, displayWidth);
+
+  return [
+    topLines.join("\n"),
+    bottomLines,
+    "",
+    "Memory Log",
+    memoryColumns,
+    "",
+    ...memoryCommitLines,
+  ].join("\n");
 }
 
 export class TerminalMapRenderer {
@@ -328,6 +424,10 @@ export class TerminalMapRenderer {
   private llmThinkingBuffer = "";
   private readonly llmCurrentThinkingLines: string[] = [];
   private readonly llmRecentRows: string[] = [];
+
+  private memoryWorking: LlmWorkingMemoryEntry[] = [];
+  private memoryJournal: LlmJournalMemoryEntry[] = [];
+  private readonly memoryCommitRows: string[] = [];
 
   private deltaRenderTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -441,6 +541,23 @@ export class TerminalMapRenderer {
     }
   }
 
+  private appendMemoryCommitRow(row: string): void {
+    this.memoryCommitRows.push(row);
+    while (this.memoryCommitRows.length > MAX_MEMORY_COMMIT_ROWS) {
+      this.memoryCommitRows.shift();
+    }
+  }
+
+  private formatWorkingCommitRow(entry: LlmWorkingMemoryEntry): string {
+    const text = shortenText(entry.text, MAX_MEMORY_COMMIT_ANNOTATION_LENGTH);
+    return `t${entry.turn} +W ${entry.kind} s${entry.salience.toFixed(2)} c${entry.confidence.toFixed(2)} ${text}`;
+  }
+
+  private formatJournalCommitRow(entry: LlmJournalMemoryEntry): string {
+    const text = shortenText(entry.text, MAX_MEMORY_COMMIT_ANNOTATION_LENGTH);
+    return `t${entry.turn} +J ${entry.kind} s${entry.salience.toFixed(2)} c${entry.confidence.toFixed(2)} ${text}`;
+  }
+
   private buildCompletedRow(event: Extract<LlmEvent, { type: "LLM_REQUEST_COMPLETED" }>): string {
     const annotationSource =
       event.whyThisAction ??
@@ -521,6 +638,11 @@ export class TerminalMapRenderer {
         currentThinkingLines: this.llmCurrentThinkingLines,
         recentRows: this.llmRecentRows,
       },
+      memory: {
+        working: this.memoryWorking,
+        journal: this.memoryJournal,
+        recentCommitRows: this.memoryCommitRows,
+      },
     });
 
     Bun.stdout.write(`${CLEAR_SCREEN}${CURSOR_HOME}${frame}\n`);
@@ -546,6 +668,9 @@ export class TerminalMapRenderer {
         this.llmThinkingBuffer = "";
         this.llmCurrentThinkingLines.length = 0;
         this.llmRecentRows.length = 0;
+        this.memoryWorking = [];
+        this.memoryJournal = [];
+        this.memoryCommitRows.length = 0;
         this.renderFrame();
         return;
       case "PLAYER_ACTION_REQUESTED":
@@ -622,6 +747,26 @@ export class TerminalMapRenderer {
         return;
       case "LLM_OUTPUT_ENDED":
         this.llmStage = "parsing";
+        this.renderFrame();
+        return;
+      case "LLM_MEMORY_UPDATED":
+        this.memoryWorking = [...event.working];
+        this.memoryJournal = [...event.journal];
+
+        for (const entry of event.committedWorking) {
+          this.appendMemoryCommitRow(this.formatWorkingCommitRow(entry));
+        }
+
+        for (const entry of event.committedJournal) {
+          this.appendMemoryCommitRow(this.formatJournalCommitRow(entry));
+        }
+
+        if (event.applied.journalCompactions > 0) {
+          this.appendMemoryCommitRow(
+            `t${event.turn} compacted long-term memory x${event.applied.journalCompactions}`,
+          );
+        }
+
         this.renderFrame();
         return;
       case "LLM_REQUEST_COMPLETED":

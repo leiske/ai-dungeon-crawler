@@ -2,7 +2,12 @@ import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AssistantMessage, ThinkingLevel } from "@mariozechner/pi-ai";
 import { z } from "zod";
 import { createAttackAction, createMoveAction, createUseItemAction, WAIT_ACTION } from "../action-utils.ts";
-import type { LlmEvent, LlmEventHandler } from "../llm-events.ts";
+import type {
+  LlmEvent,
+  LlmEventHandler,
+  LlmJournalMemoryEntry,
+  LlmWorkingMemoryEntry,
+} from "../llm-events.ts";
 import { getOpenAICodexApiKey } from "../llm/auth.ts";
 import type { Observation, PlayerAction, PlayerPolicy } from "../types.ts";
 
@@ -19,13 +24,18 @@ const SYSTEM_PROMPT = [
   '{"kind":"USE_ITEM","itemId":"potion"}',
   "Keep action fields at the top level.",
   "You may optionally include decision: {goal, keyObservations, risk, confidence, whyThisAction}.",
-  "You may optionally include memory: {workingUpdates, journalAppends}.",
+  "You may optionally include memory with this exact shape:",
+  'memory: { workingUpdates: [{ kind, text, salience, confidence }], journalAppends: [{ kind, text, salience, confidence }] }',
+  "workingUpdates.kind must be one of fact|plan|threat|target|blocked.",
+  "journalAppends.kind must be one of persona|belief|long_goal|reflection.",
+  "Each memory text must be concise single-line text.",
+  "salience and confidence must be numbers in [0,1].",
   "Input payload uses compact keys and tuples:",
   't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]], vm = memory {w,j}.',
   "tileCode uses F/W/E. kindCode uses m for enemy and p for player.",
   "Goal: reach the exit alive.",
   "Choose actions autonomously from the current state.",
-  "Memory entries must be concise single-line text.",
+  "If you include memory, use object entries, never plain strings.",
   "Do not include markdown fences or commentary.",
 ].join("\n");
 
@@ -132,11 +142,37 @@ const llmActionSchema = z.discriminatedUnion("kind", [
 
 type LlmActionPayload = z.infer<typeof llmActionSchema>;
 
+function normalizeRiskNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "unknown";
+  }
+
+  let normalized = value;
+  if (normalized > 1 && normalized <= 100) {
+    normalized /= 100;
+  }
+
+  const clamped = Math.max(0, Math.min(1, normalized));
+  if (clamped < 0.34) {
+    return "low";
+  }
+
+  if (clamped < 0.67) {
+    return "medium";
+  }
+
+  return "high";
+}
+
+const decisionRiskSchema = z
+  .union([z.string().trim().min(1).max(180), z.number().finite()])
+  .transform((value) => (typeof value === "number" ? normalizeRiskNumber(value) : value));
+
 const decisionSchema = z
   .object({
     goal: z.string().trim().min(1).max(180),
     keyObservations: z.array(z.string().trim().min(1).max(180)).min(1).max(5),
-    risk: z.string().trim().min(1).max(180),
+    risk: decisionRiskSchema,
     confidence: z.number().min(0).max(1),
     whyThisAction: z.string().trim().min(1).max(240),
   })
@@ -539,6 +575,26 @@ function applyMemoryUpdates(
   };
 }
 
+function toLlmWorkingMemoryEntry(entry: WorkingMemoryEntry): LlmWorkingMemoryEntry {
+  return {
+    kind: entry.kind,
+    text: entry.text,
+    salience: entry.salience,
+    confidence: entry.confidence,
+    turn: entry.turn,
+  };
+}
+
+function toLlmJournalMemoryEntry(entry: JournalMemoryEntry): LlmJournalMemoryEntry {
+  return {
+    kind: entry.kind,
+    text: entry.text,
+    salience: entry.salience,
+    confidence: entry.confidence,
+    turn: entry.turn,
+  };
+}
+
 export function compactObservationForPrompt(
   observation: Observation,
   promptMemory: CompactPromptMemory,
@@ -746,6 +802,37 @@ export class LlmCodexPolicy implements PlayerPolicy {
       const action = parsed.action ?? WAIT_ACTION;
       const memoryUpdate = applyMemoryUpdates(this.memory, parsed.memory, observation.turn);
       this.memory = memoryUpdate.nextMemory;
+
+      const committedWorking: LlmWorkingMemoryEntry[] = (parsed.memory?.workingUpdates ?? []).map(
+        (update) => ({
+          kind: update.kind,
+          text: normalizeMemoryText(update.text),
+          salience: update.salience,
+          confidence: update.confidence,
+          turn: observation.turn,
+        }),
+      );
+
+      const committedJournal: LlmJournalMemoryEntry[] = (parsed.memory?.journalAppends ?? []).map(
+        (append) => ({
+          kind: append.kind,
+          text: normalizeMemoryText(append.text),
+          salience: append.salience,
+          confidence: append.confidence,
+          turn: observation.turn,
+        }),
+      );
+
+      await this.emitEvent({
+        type: "LLM_MEMORY_UPDATED",
+        turn: observation.turn,
+        playerId,
+        applied: memoryUpdate.applied,
+        committedWorking,
+        committedJournal,
+        working: memoryUpdate.nextMemory.working.map((entry) => toLlmWorkingMemoryEntry(entry)),
+        journal: memoryUpdate.nextMemory.journal.map((entry) => toLlmJournalMemoryEntry(entry)),
+      });
 
       const trace: LlmDecisionTrace = {
         turn: observation.turn,
