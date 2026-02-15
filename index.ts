@@ -1,5 +1,5 @@
 import { GreedyEnemyController } from "./src/enemy/greedy.ts";
-import { WaitPolicy } from "./src/policy/stub.ts";
+import { LlmCodexPolicy } from "./src/policy/llm.ts";
 import { runEpisode } from "./src/run.ts";
 import { createScenario } from "./src/scenario.ts";
 
@@ -24,11 +24,12 @@ function formatMetrics(metrics: {
 export async function main(): Promise<void> {
   const seed = 42;
   const scenario = createScenario(seed);
+  const playerPolicy = new LlmCodexPolicy();
 
   const result = await runEpisode({
     scenario,
     seed,
-    playerPolicy: new WaitPolicy(),
+    playerPolicy,
     enemyController: new GreedyEnemyController(),
     traceEnabled: true,
   });
@@ -46,6 +47,21 @@ export async function main(): Promise<void> {
     }
     console.log("");
   }
+
+  console.log("LLM Decisions:");
+  for (const decision of playerPolicy.getDecisionTrace()) {
+    console.log(
+      `- turn=${decision.turn} action=${JSON.stringify(decision.action)} latencyMs=${decision.latencyMs} tokens=${decision.tokenUsage.total} stopReason=${decision.stopReason ?? "unknown"}`,
+    );
+    if (decision.fallbackReason) {
+      console.log(`  fallback=${decision.fallbackReason}`);
+    }
+    if (decision.modelErrorMessage) {
+      console.log(`  modelError=${decision.modelErrorMessage}`);
+    }
+    console.log(`  raw=${JSON.stringify(decision.rawResponse)}`);
+  }
+  console.log("");
 
   console.log(`Outcome: ${result.outcome}`);
   console.log(`Metrics: ${formatMetrics(result.metrics)}`);
