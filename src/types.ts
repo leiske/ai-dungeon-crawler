@@ -45,6 +45,7 @@ export interface ActorBase extends Position {
 export interface Player extends ActorBase {
   kind: "player";
   potionCount: number;
+  visitedPositions: Position[];
 }
 
 export interface Enemy extends ActorBase {
@@ -119,6 +120,7 @@ export interface Observation {
   self: ObservedSelf;
   visibleTiles: ObservationTile[];
   visibleEntities: ObservedEntity[];
+  visitedPositions: Position[];
 }
 
 export interface PlayerActionIntent {

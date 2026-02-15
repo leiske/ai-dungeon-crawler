@@ -23,14 +23,6 @@ function formatMetrics(metrics: {
 }
 
 function formatStepHeader(step: EpisodeStep): string {
-  if (step.phase === "TURN_START") {
-    return `Turn ${step.turn} | TURN_START`;
-  }
-
-  if (step.phase === "TURN_FINALIZED") {
-    return `Turn ${step.turn} | TURN_FINALIZED`;
-  }
-
   return `Turn ${step.turn} | ${step.phase} | ${step.actorType ?? "unknown"}#${step.actorId ?? "unknown"} | action=${JSON.stringify(step.action)}`;
 }
 

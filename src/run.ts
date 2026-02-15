@@ -18,10 +18,8 @@ import type {
 } from "./types.ts";
 
 export type EpisodeStepPhase =
-  | "TURN_START"
   | "PLAYER_ACTION_APPLIED"
-  | "ENEMY_ACTION_APPLIED"
-  | "TURN_FINALIZED";
+  | "ENEMY_ACTION_APPLIED";
 
 export interface EpisodeStep {
   turn: number;
@@ -80,13 +78,6 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     const turnEvents: SimulationEvent[] = [];
     const turnNumber = state.turn;
 
-    await emitEpisodeStep(options, {
-      turn: turnNumber,
-      phase: "TURN_START",
-      events: [],
-      board: render(state),
-    });
-
     const alivePlayers = sortById(state.players.filter((player) => player.hp > 0));
     const playerIntents: PlayerActionIntent[] = [];
 
@@ -139,13 +130,6 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     turnEvents.push(...finalizationResult.events);
 
     const finalizedBoard = render(state);
-
-    await emitEpisodeStep(options, {
-      turn: turnNumber,
-      phase: "TURN_FINALIZED",
-      events: finalizationResult.events,
-      board: finalizedBoard,
-    });
 
     if (traceEnabled) {
       trace.turns.push({

@@ -95,5 +95,9 @@ export function getObservation(state: GameState, playerId: number): Observation 
     },
     visibleTiles,
     visibleEntities,
+    visitedPositions: player.visitedPositions.map((position) => ({
+      x: position.x,
+      y: position.y,
+    })),
   };
 }

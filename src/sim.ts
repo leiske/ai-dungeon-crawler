@@ -137,7 +137,13 @@ function tryApplyMoveAction(input: MoveActorInput): boolean {
 }
 
 function clonePlayers(players: Player[]): Player[] {
-  return players.map((player) => ({ ...player }));
+  return players.map((player) => ({
+    ...player,
+    visitedPositions: player.visitedPositions.map((position) => ({
+      x: position.x,
+      y: position.y,
+    })),
+  }));
 }
 
 function cloneEnemies(enemies: Enemy[]): Enemy[] {
@@ -153,6 +159,18 @@ function createInitialMetrics(): Metrics {
     potionsUsed: 0,
     enemiesKilled: 0,
   };
+}
+
+function markVisitedPosition(player: Player, x: number, y: number): void {
+  const alreadyVisited = player.visitedPositions.some(
+    (position) => position.x === x && position.y === y,
+  );
+
+  if (alreadyVisited) {
+    return;
+  }
+
+  player.visitedPositions.push({ x, y });
 }
 
 export function cloneState(state: GameState): GameState {
@@ -188,6 +206,12 @@ export function createInitialState(
   scenario: ScenarioDefinition,
   seed: number,
 ): GameState {
+  const players = clonePlayers(scenario.players);
+  for (const player of players) {
+    player.visitedPositions = [];
+    markVisitedPosition(player, player.x, player.y);
+  }
+
   return {
     seed,
     turn: 0,
@@ -196,7 +220,7 @@ export function createInitialState(
       height: scenario.map.height,
       tiles: scenario.map.tiles.map((row) => [...row]),
     },
-    players: clonePlayers(scenario.players),
+    players,
     enemies: cloneEnemies(scenario.enemies),
     rules: {
       maxTurns: scenario.rules.maxTurns,
@@ -266,6 +290,7 @@ export function applyPlayerPhase(
         ignorePlayerId: player.id,
       })
     ) {
+      markVisitedPosition(player, player.x, player.y);
       continue;
     }
 

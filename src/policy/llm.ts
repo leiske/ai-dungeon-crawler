@@ -15,6 +15,7 @@ const SYSTEM_PROMPT = [
   '{"kind":"MOVE","direction":"N|S|E|W"}',
   '{"kind":"ATTACK","direction":"N|S|E|W"}',
   '{"kind":"USE_ITEM","itemId":"potion"}',
+  "Use visitedPositions to reduce unnecessary backtracking when safe.",
   "Do not include markdown fences or commentary.",
 ].join("\n");
 
@@ -183,6 +184,7 @@ function buildPrompt(observation: Observation): string {
   return [
     "Choose the next action from the current observation.",
     "Objective: stay alive and reach the exit tile if possible.",
+    "visitedPositions lists coordinates you have already visited.",
     "Observation JSON:",
     JSON.stringify(observation),
   ].join("\n");
