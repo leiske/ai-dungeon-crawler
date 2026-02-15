@@ -27,7 +27,7 @@ test("compactObservationForPrompt compacts keys and limits visited positions to 
     visitedPositions,
   };
 
-  const compact = compactObservationForPrompt(observation);
+  const compact = compactObservationForPrompt(observation, { w: [], j: [] });
 
   expect(compact).toEqual({
     t: 7,
@@ -50,5 +50,9 @@ test("compactObservationForPrompt compacts keys and limits visited positions to 
       [10, 110],
       [11, 111],
     ],
+    vm: {
+      w: [],
+      j: [],
+    },
   });
 });

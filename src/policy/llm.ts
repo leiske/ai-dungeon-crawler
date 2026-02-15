@@ -18,10 +18,13 @@ const SYSTEM_PROMPT = [
   '{"kind":"USE_ITEM","itemId":"potion"}',
   "Keep action fields at the top level.",
   "You may optionally include decision: {goal, keyObservations, risk, confidence, whyThisAction}.",
+  "You may optionally include memory: {workingUpdates, journalAppends}.",
   "Input payload uses compact keys and tuples:",
-  't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]].',
+  't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]], vm = memory {w,j}.',
   "tileCode uses F/W/E. kindCode uses m for enemy and p for player.",
-  "Use vp to reduce unnecessary backtracking when safe.",
+  "Goal: reach the exit alive.",
+  "Choose actions autonomously from the current state.",
+  "Memory entries must be concise single-line text.",
   "Do not include markdown fences or commentary.",
 ].join("\n");
 
@@ -29,6 +32,11 @@ export interface LlmDecisionTrace {
   turn: number;
   action: PlayerAction;
   decision?: LlmDecision;
+  memoryApplied?: {
+    workingUpdates: number;
+    journalAppends: number;
+    journalCompactions: number;
+  };
   latencyMs: number;
   rawJsonSnippet: string;
   rawResponse: string;
@@ -37,6 +45,7 @@ export interface LlmDecisionTrace {
   modelErrorMessage?: string;
   fallbackReason?: string;
   decisionParseError?: string;
+  memoryParseError?: string;
   tokenUsage: {
     input: number;
     output: number;
@@ -52,6 +61,48 @@ export interface LlmDecision {
   whyThisAction: string;
 }
 
+type WorkingMemoryKind = "fact" | "plan" | "threat" | "target" | "blocked";
+type JournalMemoryKind = "persona" | "belief" | "long_goal" | "reflection";
+
+interface WorkingMemoryEntry {
+  kind: WorkingMemoryKind;
+  text: string;
+  salience: number;
+  confidence: number;
+  turn: number;
+}
+
+interface JournalMemoryEntry {
+  kind: JournalMemoryKind;
+  text: string;
+  salience: number;
+  confidence: number;
+  turn: number;
+}
+
+interface PolicyMemoryState {
+  working: WorkingMemoryEntry[];
+  journal: JournalMemoryEntry[];
+}
+
+interface ParsedMemoryPayload {
+  workingUpdates: Array<Pick<WorkingMemoryEntry, "kind" | "text" | "salience" | "confidence">>;
+  journalAppends: Array<Pick<JournalMemoryEntry, "kind" | "text" | "salience" | "confidence">>;
+}
+
+interface CompactPromptMemory {
+  w: Array<[kind: WorkingMemoryKind, text: string, salience: number, confidence: number]>;
+  j: Array<[kind: JournalMemoryKind, text: string, salience: number, confidence: number]>;
+}
+
+const MAX_WORKING_UPDATES_PER_TURN = 3;
+const MAX_JOURNAL_APPENDS_PER_TURN = 2;
+const MAX_WORKING_MEMORY_ENTRIES = 10;
+const MAX_JOURNAL_MEMORY_ENTRIES = 40;
+const MAX_PROMPT_WORKING_ENTRIES = 6;
+const MAX_PROMPT_JOURNAL_ENTRIES = 8;
+const MEMORY_TEXT_PATTERN = /^[^\r\n]+$/;
+
 export interface CodexPolicyOptions {
   authPath?: string;
   reasoning?: ThinkingLevel;
@@ -61,9 +112,11 @@ export interface CodexPolicyOptions {
 interface ParseActionResult {
   action: PlayerAction | null;
   decision?: LlmDecision;
+  memory?: ParsedMemoryPayload;
   rawJsonSnippet: string;
   reason?: string;
   decisionParseError?: string;
+  memoryParseError?: string;
 }
 
 const directionSchema = z.enum(["N", "S", "E", "W"]);
@@ -86,6 +139,38 @@ const decisionSchema = z
     whyThisAction: z.string().trim().min(1).max(240),
   })
   .strict();
+
+const workingMemoryKindSchema = z.enum(["fact", "plan", "threat", "target", "blocked"]);
+const journalMemoryKindSchema = z.enum(["persona", "belief", "long_goal", "reflection"]);
+
+const workingUpdateSchema = z
+  .object({
+    kind: workingMemoryKindSchema,
+    text: z.string().trim().min(1).max(120).regex(MEMORY_TEXT_PATTERN, "must be single-line"),
+    salience: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+const journalAppendSchema = z
+  .object({
+    kind: journalMemoryKindSchema,
+    text: z.string().trim().min(1).max(180).regex(MEMORY_TEXT_PATTERN, "must be single-line"),
+    salience: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+const memorySchema = z
+  .object({
+    workingUpdates: z.array(workingUpdateSchema).max(MAX_WORKING_UPDATES_PER_TURN).optional(),
+    journalAppends: z.array(journalAppendSchema).max(MAX_JOURNAL_APPENDS_PER_TURN).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => (value.workingUpdates?.length ?? 0) + (value.journalAppends?.length ?? 0) > 0,
+    "memory must include at least one update",
+  );
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -204,7 +289,7 @@ function parseActionObject(value: unknown): ParseActionResult {
     return { action: null, rawJsonSnippet: "", reason: "action payload must be an object" };
   }
 
-  const { decision: decisionValue, ...actionPayload } = value;
+  const { decision: decisionValue, memory: memoryValue, ...actionPayload } = value;
   const parsed = llmActionSchema.safeParse(actionPayload);
   if (!parsed.success) {
     return {
@@ -216,6 +301,9 @@ function parseActionObject(value: unknown): ParseActionResult {
 
   let decision: LlmDecision | undefined;
   let decisionParseError: string | undefined;
+  let memory: ParsedMemoryPayload | undefined;
+  let memoryParseError: string | undefined;
+
   if (decisionValue !== undefined) {
     const parsedDecision = decisionSchema.safeParse(decisionValue);
     if (parsedDecision.success) {
@@ -225,11 +313,25 @@ function parseActionObject(value: unknown): ParseActionResult {
     }
   }
 
+  if (memoryValue !== undefined) {
+    const parsedMemory = memorySchema.safeParse(memoryValue);
+    if (parsedMemory.success) {
+      memory = {
+        workingUpdates: parsedMemory.data.workingUpdates ?? [],
+        journalAppends: parsedMemory.data.journalAppends ?? [],
+      };
+    } else {
+      memoryParseError = describeSchemaError(parsedMemory.error);
+    }
+  }
+
   return {
     action: toPlayerAction(parsed.data),
     decision,
+    memory,
     rawJsonSnippet: "",
     decisionParseError,
+    memoryParseError,
   };
 }
 
@@ -262,6 +364,7 @@ interface CompactObservation {
   vt: Array<[x: number, y: number, tileCode: CompactTileCode]>;
   ve: Array<[id: number, kindCode: CompactEntityCode, x: number, y: number, hp: number, maxHp: number]>;
   vp: Array<[x: number, y: number]>;
+  vm: CompactPromptMemory;
 }
 
 function toCompactTileCode(tile: Observation["visibleTiles"][number]["tile"]): CompactTileCode {
@@ -279,7 +382,165 @@ function toCompactEntityCode(kind: Observation["visibleEntities"][number]["kind"
   return kind === "enemy" ? "m" : "p";
 }
 
-export function compactObservationForPrompt(observation: Observation): CompactObservation {
+function memoryEntryPriority(turn: number, salience: number): number {
+  const recencyBoost = 1 / (1 + Math.max(0, turn));
+  return salience * 0.75 + recencyBoost * 0.25;
+}
+
+function normalizeMemoryText(text: string): string {
+  return text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function selectMemoryForPrompt(memory: PolicyMemoryState, currentTurn: number): CompactPromptMemory {
+  const working = [...memory.working]
+    .sort((left, right) => {
+      const rightScore = memoryEntryPriority(currentTurn - right.turn, right.salience);
+      const leftScore = memoryEntryPriority(currentTurn - left.turn, left.salience);
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
+      return right.turn - left.turn;
+    })
+    .slice(0, MAX_PROMPT_WORKING_ENTRIES)
+    .map<[WorkingMemoryKind, string, number, number]>((entry) => [
+      entry.kind,
+      entry.text,
+      entry.salience,
+      entry.confidence,
+    ]);
+
+  const journal = [...memory.journal]
+    .sort((left, right) => {
+      const rightScore = memoryEntryPriority(currentTurn - right.turn, right.salience);
+      const leftScore = memoryEntryPriority(currentTurn - left.turn, left.salience);
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
+      return right.turn - left.turn;
+    })
+    .slice(0, MAX_PROMPT_JOURNAL_ENTRIES)
+    .map<[JournalMemoryKind, string, number, number]>((entry) => [
+      entry.kind,
+      entry.text,
+      entry.salience,
+      entry.confidence,
+    ]);
+
+  return {
+    w: working,
+    j: journal,
+  };
+}
+
+function compactJournalMemory(journal: JournalMemoryEntry[], turn: number): {
+  journal: JournalMemoryEntry[];
+  compactions: number;
+} {
+  let nextJournal = [...journal];
+  let compactions = 0;
+
+  while (nextJournal.length > MAX_JOURNAL_MEMORY_ENTRIES) {
+    const removable = [...nextJournal]
+      .sort((left, right) => {
+        const leftPersonaPenalty = left.kind === "persona" ? 1 : 0;
+        const rightPersonaPenalty = right.kind === "persona" ? 1 : 0;
+        if (leftPersonaPenalty !== rightPersonaPenalty) {
+          return leftPersonaPenalty - rightPersonaPenalty;
+        }
+        if (left.salience !== right.salience) {
+          return left.salience - right.salience;
+        }
+        return left.turn - right.turn;
+      })
+      .slice(0, 6);
+
+    if (removable.length < 2) {
+      break;
+    }
+
+    const removableSet = new Set(removable.map((entry) => `${entry.kind}:${entry.turn}:${entry.text}`));
+    const keptEntries = nextJournal.filter((entry) => !removableSet.has(`${entry.kind}:${entry.turn}:${entry.text}`));
+    const summaryText = removable
+      .map((entry) => `${entry.kind}:${entry.text}`)
+      .join(" | ")
+      .slice(0, 180);
+
+    const confidenceSum = removable.reduce((sum, entry) => sum + entry.confidence, 0);
+    const salienceMax = removable.reduce((max, entry) => Math.max(max, entry.salience), 0);
+    const summaryEntry: JournalMemoryEntry = {
+      kind: "reflection",
+      text: normalizeMemoryText(summaryText),
+      salience: Math.max(0.35, Math.min(1, salienceMax * 0.85)),
+      confidence: Math.max(0.35, Math.min(1, confidenceSum / removable.length)),
+      turn,
+    };
+
+    nextJournal = [...keptEntries, summaryEntry];
+    compactions += 1;
+  }
+
+  return {
+    journal: nextJournal,
+    compactions,
+  };
+}
+
+function applyMemoryUpdates(
+  memory: PolicyMemoryState,
+  updates: ParsedMemoryPayload | undefined,
+  turn: number,
+): {
+  nextMemory: PolicyMemoryState;
+  applied: { workingUpdates: number; journalAppends: number; journalCompactions: number };
+} {
+  if (!updates) {
+    return {
+      nextMemory: memory,
+      applied: { workingUpdates: 0, journalAppends: 0, journalCompactions: 0 },
+    };
+  }
+
+  const nextWorking = [
+    ...memory.working,
+    ...updates.workingUpdates.map((update) => ({
+      kind: update.kind,
+      text: normalizeMemoryText(update.text),
+      salience: update.salience,
+      confidence: update.confidence,
+      turn,
+    })),
+  ].slice(-MAX_WORKING_MEMORY_ENTRIES);
+
+  const nextJournalRaw = [
+    ...memory.journal,
+    ...updates.journalAppends.map((append) => ({
+      kind: append.kind,
+      text: normalizeMemoryText(append.text),
+      salience: append.salience,
+      confidence: append.confidence,
+      turn,
+    })),
+  ];
+
+  const compacted = compactJournalMemory(nextJournalRaw, turn);
+
+  return {
+    nextMemory: {
+      working: nextWorking,
+      journal: compacted.journal,
+    },
+    applied: {
+      workingUpdates: updates.workingUpdates.length,
+      journalAppends: updates.journalAppends.length,
+      journalCompactions: compacted.compactions,
+    },
+  };
+}
+
+export function compactObservationForPrompt(
+  observation: Observation,
+  promptMemory: CompactPromptMemory,
+): CompactObservation {
   return {
     t: observation.turn,
     s: [
@@ -299,14 +560,16 @@ export function compactObservationForPrompt(observation: Observation): CompactOb
       entity.maxHp,
     ]),
     vp: observation.visitedPositions.slice(-10).map((position) => [position.x, position.y]),
+    vm: promptMemory,
   };
 }
 
-function buildPrompt(observation: Observation): string {
-  const compactObservation = compactObservationForPrompt(observation);
+function buildPrompt(observation: Observation, promptMemory: CompactPromptMemory): string {
+  const compactObservation = compactObservationForPrompt(observation, promptMemory);
   return [
-    "Choose the next action.",
-    "Objective: stay alive and reach the exit tile if possible.",
+    "Select the next action from the allowed action schema.",
+    "Goal: reach the exit alive.",
+    "Use your own strategy based on the current state and memory.",
     "Use the compact payload below.",
     "State JSON:",
     JSON.stringify(compactObservation),
@@ -323,6 +586,10 @@ function describeError(error: unknown): string {
 export class LlmCodexPolicy implements PlayerPolicy {
   private readonly model = getModel(MODEL_PROVIDER, MODEL_ID);
   private readonly decisionTrace: LlmDecisionTrace[] = [];
+  private memory: PolicyMemoryState = {
+    working: [],
+    journal: [],
+  };
   private readonly authPath?: string;
   private readonly reasoning: ThinkingLevel;
   private readonly onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
@@ -355,7 +622,8 @@ export class LlmCodexPolicy implements PlayerPolicy {
 
   public async chooseAction(observation: Observation): Promise<PlayerAction> {
     const startedAt = Date.now();
-    const prompt = buildPrompt(observation);
+    const promptMemory = selectMemoryForPrompt(this.memory, observation.turn);
+    const prompt = buildPrompt(observation, promptMemory);
 
     try {
       const { apiKey } = await getOpenAICodexApiKey(this.authPath);
@@ -374,7 +642,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
         {
           apiKey,
           reasoning: this.reasoning,
-          maxTokens: 180,
+          maxTokens: 320,
         },
       );
 
@@ -396,11 +664,14 @@ export class LlmCodexPolicy implements PlayerPolicy {
       }
 
       const action = parsed.action ?? WAIT_ACTION;
+      const memoryUpdate = applyMemoryUpdates(this.memory, parsed.memory, observation.turn);
+      this.memory = memoryUpdate.nextMemory;
 
       const trace: LlmDecisionTrace = {
         turn: observation.turn,
         action,
         decision: parsed.decision,
+        memoryApplied: memoryUpdate.applied,
         latencyMs: Date.now() - startedAt,
         rawJsonSnippet: parsed.rawJsonSnippet,
         rawResponse,
@@ -409,6 +680,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
         modelErrorMessage,
         fallbackReason: parsed.reason,
         decisionParseError: parsed.decisionParseError,
+        memoryParseError: parsed.memoryParseError,
         tokenUsage: {
           input: response.usage.input,
           output: response.usage.output,
