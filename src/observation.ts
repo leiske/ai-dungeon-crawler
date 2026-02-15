@@ -11,6 +11,7 @@ export function getObservation(state: GameState, playerId: number): Observation 
   const radius = state.rules.visionRadius;
   const visibleTiles: Observation["visibleTiles"] = [];
 
+  // this needs to eventually do some sort of FOV algo / raycasting to not see behind walls
   for (let y = player.y - radius; y <= player.y + radius; y += 1) {
     if (y < 0 || y >= state.map.height) {
       continue;
@@ -43,6 +44,7 @@ export function getObservation(state: GameState, playerId: number): Observation 
     }
   }
 
+  // Again - this should eventually be filtered by line of sight, but for now we just use the same radius as tiles
   const visibleEntities: Observation["visibleEntities"] = [];
 
   for (const otherPlayer of state.players) {

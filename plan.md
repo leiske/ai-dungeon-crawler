@@ -4,7 +4,7 @@
 
 Build a minimal, deterministic, turn-based roguelike simulation in TypeScript that runs entirely in Bun (no rendering library, no Phaser, no browser).
 
-The goal is to create a simulation harness for AI-controlled personas. No UI beyond ASCII console output. No LLM integration yet.
+The goal is to create a simulation harness for AI-controlled personas using an LLM policy. No UI beyond ASCII console output.
 
 Focus on correctness, determinism, and clean architecture so we can later plug in an LLM policy with minimal refactoring.
 
@@ -94,18 +94,16 @@ End-condition precedence:
 
 ---
 
-## Player Actions (Enum)
+## Player Actions (Discriminated Union)
 
-* MOVE_N
-* MOVE_S
-* MOVE_E
-* MOVE_W
-* ATTACK_N
-* ATTACK_S
-* ATTACK_E
-* ATTACK_W
-* USE_POTION (restore 5 HP, capped at maxHp)
-* WAIT
+Use a discriminated-union action model instead of flattened enums so actions can carry additional structured fields in future iterations.
+
+Current v0 action kinds:
+
+* `{ kind: "MOVE", direction: "N" | "S" | "E" | "W" }`
+* `{ kind: "ATTACK", direction: "N" | "S" | "E" | "W" }`
+* `{ kind: "USE_ITEM", item: "POTION" }` (restore 5 HP, capped at maxHp)
+* `{ kind: "WAIT" }`
 
 Invalid actions must be rejected and replaced with WAIT.
 
@@ -121,17 +119,17 @@ Examples of invalid actions:
 ## Determinism Rules
 
 * All tie breaks must use fixed ordering.
-* Action preference fallback order:
+* Action preference fallback order (semantic order, regardless of object shape):
 
-  1. MOVE_N
-  2. MOVE_S
-  3. MOVE_E
-  4. MOVE_W
-  5. ATTACK_N
-  6. ATTACK_S
-  7. ATTACK_E
-  8. ATTACK_W
-  9. USE_POTION
+  1. MOVE N
+  2. MOVE S
+  3. MOVE E
+  4. MOVE W
+  5. ATTACK N
+  6. ATTACK S
+  7. ATTACK E
+  8. ATTACK W
+  9. USE_ITEM POTION
   10. WAIT
 
 * Enemy move tie-break order: N, S, E, W.
@@ -196,11 +194,11 @@ Examples of invalid actions:
 * `EnemyController` interface
 * `chooseAction(state, enemyId): EnemyAction`
 
-`policy/heuristic.ts`
+`policy/llm.ts`
 
-* Persona definition
-* `scoreActions(observation, persona)`
-* `chooseAction(observation, persona): Promise<Action>`
+* LLM-backed policy implementation for v0
+* Maps observation -> model prompt -> structured action output
+* `chooseAction(observation): Promise<Action>`
 
 `enemy/greedy.ts`
 
@@ -232,25 +230,17 @@ Policy does not receive hidden map state or off-vision entities.
 
 ## Persona System
 
-Persona = parameter object only.
+Persona is represented by prompt/context configuration for the LLM policy.
 
-Example fields:
+Examples of persona controls:
 
-* riskTolerance: number (0-1)
-* hpPanicThreshold: number (0-1)
-* aggressionBias: number (0-1)
-* explorationBias: number (0-1)
-* potionUseBias: number (0-1)
+* System prompt framing
+* Goal/priority weighting in prompt instructions
+* Safety/consistency constraints
 
-Heuristic policy should:
+`chooseAction` is async and model-backed in v0.
 
-1. Enumerate all valid actions from observation.
-2. Score each action.
-3. Return highest scoring action.
-
-No randomness in policy for v0.
-
-`chooseAction` is async from day one to support future LLM policies.
+For deterministic simulation validation, the sim core remains deterministic; policy variability is isolated to runner-owned policy selection.
 
 ---
 
@@ -287,7 +277,6 @@ Provide a function `render(state)` that prints:
 
 * No external game engines.
 * No UI frameworks.
-* No LLM integration in v0.
 * Keep total codebase small for v0.
 * Prefer pure functions where possible (very important).
 * No unit tests in v0.
@@ -298,7 +287,7 @@ Provide a function `render(state)` that prints:
 
 * Can run 100 simulations of the fixed smoke scenario.
 * Deterministic results across repeated runs.
-* At least two personas can be executed through the same harness.
+* At least two LLM persona configurations can be executed through the same harness.
 * Clean, readable code.
 
 Note on seeds in v0:
@@ -320,7 +309,7 @@ For now, build the lab.
 
 ## Decision Log (2026-02-14)
 
-* Use directional attack actions (`ATTACK_N/S/E/W`) rather than generic ATTACK.
+* Use discriminated-union actions (`MOVE`/`ATTACK` with `direction`) rather than flattened directional enums, so action payloads can evolve cleanly.
 * Invalid actions (including blocked movement / invalid attacks) become WAIT.
 * Entities cannot move into occupied tiles; enemies cannot stack.
 * Loss overrides win if both could trigger in same turn.

@@ -1,8 +1,9 @@
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
 import type { AssistantMessage, ThinkingLevel } from "@mariozechner/pi-ai";
+import { z } from "zod";
 import { createAttackAction, createMoveAction, createUseItemAction, WAIT_ACTION } from "../action-utils.ts";
 import { getOpenAICodexApiKey } from "../llm/auth.ts";
-import type { Direction, Observation, PlayerAction, PlayerPolicy } from "../types.ts";
+import type { Observation, PlayerAction, PlayerPolicy } from "../types.ts";
 
 const MODEL_PROVIDER = "openai-codex" as const;
 const MODEL_ID = "gpt-5.3-codex" as const;
@@ -44,12 +45,38 @@ interface ParseActionResult {
   reason?: string;
 }
 
-function isDirection(value: unknown): value is Direction {
-  return value === "N" || value === "S" || value === "E" || value === "W";
+const directionSchema = z.enum(["N", "S", "E", "W"]);
+
+const llmActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("WAIT") }).strict(),
+  z.object({ kind: z.literal("MOVE"), direction: directionSchema }).strict(),
+  z.object({ kind: z.literal("ATTACK"), direction: directionSchema }).strict(),
+  z.object({ kind: z.literal("USE_ITEM"), itemId: z.literal("potion") }).strict(),
+]);
+
+type LlmActionPayload = z.infer<typeof llmActionSchema>;
+
+function describeSchemaError(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (!issue) {
+    return "invalid action payload";
+  }
+
+  const path = issue.path.length > 0 ? issue.path.join(".") : "root";
+  return `${path}: ${issue.message}`;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function toPlayerAction(action: LlmActionPayload): PlayerAction {
+  switch (action.kind) {
+    case "WAIT":
+      return WAIT_ACTION;
+    case "MOVE":
+      return createMoveAction(action.direction);
+    case "ATTACK":
+      return createAttackAction(action.direction);
+    case "USE_ITEM":
+      return createUseItemAction(action.itemId);
+  }
 }
 
 function extractTextContent(message: AssistantMessage): string {
@@ -128,40 +155,12 @@ function extractJsonSnippet(text: string): string | null {
 }
 
 function parseActionObject(value: unknown): ParseActionResult {
-  if (!isObject(value)) {
-    return { action: null, reason: "response is not an object" };
+  const parsed = llmActionSchema.safeParse(value);
+  if (!parsed.success) {
+    return { action: null, reason: describeSchemaError(parsed.error) };
   }
 
-  const kind = value.kind;
-  if (kind === "WAIT") {
-    return { action: WAIT_ACTION };
-  }
-
-  if (kind === "MOVE") {
-    const direction = value.direction;
-    if (!isDirection(direction)) {
-      return { action: null, reason: "MOVE requires direction N/S/E/W" };
-    }
-    return { action: createMoveAction(direction) };
-  }
-
-  if (kind === "ATTACK") {
-    const direction = value.direction;
-    if (!isDirection(direction)) {
-      return { action: null, reason: "ATTACK requires direction N/S/E/W" };
-    }
-    return { action: createAttackAction(direction) };
-  }
-
-  if (kind === "USE_ITEM") {
-    const itemId = value.itemId;
-    if (itemId !== "potion") {
-      return { action: null, reason: "USE_ITEM currently supports only itemId='potion'" };
-    }
-    return { action: createUseItemAction("potion") };
-  }
-
-  return { action: null, reason: "unknown action kind" };
+  return { action: toPlayerAction(parsed.data) };
 }
 
 function parseActionFromText(text: string): ParseActionResult {
