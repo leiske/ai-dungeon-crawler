@@ -18,7 +18,10 @@ const SYSTEM_PROMPT = [
   '{"kind":"USE_ITEM","itemId":"potion"}',
   "Keep action fields at the top level.",
   "You may optionally include decision: {goal, keyObservations, risk, confidence, whyThisAction}.",
-  "Use visitedPositions to reduce unnecessary backtracking when safe.",
+  "Input payload uses compact keys and tuples:",
+  't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]].',
+  "tileCode uses F/W/E. kindCode uses m for enemy and p for player.",
+  "Use vp to reduce unnecessary backtracking when safe.",
   "Do not include markdown fences or commentary.",
 ].join("\n");
 
@@ -250,16 +253,63 @@ function parseActionFromText(text: string): ParseActionResult {
   };
 }
 
+type CompactTileCode = "F" | "W" | "E";
+type CompactEntityCode = "m" | "p";
+
+interface CompactObservation {
+  t: number;
+  s: [x: number, y: number, hp: number, maxHp: number, potionCount: number];
+  vt: Array<[x: number, y: number, tileCode: CompactTileCode]>;
+  ve: Array<[id: number, kindCode: CompactEntityCode, x: number, y: number, hp: number, maxHp: number]>;
+  vp: Array<[x: number, y: number]>;
+}
+
+function toCompactTileCode(tile: Observation["visibleTiles"][number]["tile"]): CompactTileCode {
+  switch (tile) {
+    case "FLOOR":
+      return "F";
+    case "WALL":
+      return "W";
+    case "EXIT":
+      return "E";
+  }
+}
+
+function toCompactEntityCode(kind: Observation["visibleEntities"][number]["kind"]): CompactEntityCode {
+  return kind === "enemy" ? "m" : "p";
+}
+
+export function compactObservationForPrompt(observation: Observation): CompactObservation {
+  return {
+    t: observation.turn,
+    s: [
+      observation.self.x,
+      observation.self.y,
+      observation.self.hp,
+      observation.self.maxHp,
+      observation.self.potionCount,
+    ],
+    vt: observation.visibleTiles.map((tile) => [tile.x, tile.y, toCompactTileCode(tile.tile)]),
+    ve: observation.visibleEntities.map((entity) => [
+      entity.id,
+      toCompactEntityCode(entity.kind),
+      entity.x,
+      entity.y,
+      entity.hp,
+      entity.maxHp,
+    ]),
+    vp: observation.visitedPositions.slice(-10).map((position) => [position.x, position.y]),
+  };
+}
+
 function buildPrompt(observation: Observation): string {
+  const compactObservation = compactObservationForPrompt(observation);
   return [
-    "Choose the next action from the current observation.",
+    "Choose the next action.",
     "Objective: stay alive and reach the exit tile if possible.",
-    "Return the action fields at the top level exactly as one of the allowed outputs.",
-    "You may include an optional 'decision' object with keys: goal, keyObservations, risk, confidence (0..1), whyThisAction.",
-    "Keep decision concise.",
-    "visitedPositions lists coordinates you have already visited.",
-    "Observation JSON:",
-    JSON.stringify(observation),
+    "Use the compact payload below.",
+    "State JSON:",
+    JSON.stringify(compactObservation),
   ].join("\n");
 }
 
