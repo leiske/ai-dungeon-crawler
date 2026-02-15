@@ -89,7 +89,7 @@ export function createFixedScenario(seed: number): ScenarioDefinition {
     ],
     enemies,
     rules: {
-      maxTurns: 5,
+      maxTurns: 50,
       visionRadius: 2,
       playerAttackDamage: 3,
       potionHealAmount: 5,

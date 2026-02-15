@@ -1,5 +1,6 @@
 import { GreedyEnemyController } from "./src/enemy/greedy.ts";
 import { LlmCodexPolicy } from "./src/policy/llm.ts";
+import type { EpisodeStep } from "./src/run.ts";
 import { runEpisode } from "./src/run.ts";
 import { createScenario } from "./src/scenario.ts";
 
@@ -21,6 +22,32 @@ function formatMetrics(metrics: {
   ].join(", ");
 }
 
+function formatStepHeader(step: EpisodeStep): string {
+  if (step.phase === "TURN_START") {
+    return `Turn ${step.turn} | TURN_START`;
+  }
+
+  if (step.phase === "TURN_FINALIZED") {
+    return `Turn ${step.turn} | TURN_FINALIZED`;
+  }
+
+  return `Turn ${step.turn} | ${step.phase} | ${step.actorType ?? "unknown"}#${step.actorId ?? "unknown"} | action=${JSON.stringify(step.action)}`;
+}
+
+function printStep(step: EpisodeStep): void {
+  console.log(formatStepHeader(step));
+  console.log(step.board);
+  console.log("Events:");
+  if (step.events.length === 0) {
+    console.log("- none");
+  } else {
+    for (const event of step.events) {
+      console.log(`- ${JSON.stringify(event)}`);
+    }
+  }
+  console.log("");
+}
+
 export async function main(): Promise<void> {
   const seed = 42;
   const scenario = createScenario(seed);
@@ -32,21 +59,12 @@ export async function main(): Promise<void> {
     playerPolicy,
     enemyController: new GreedyEnemyController(),
     traceEnabled: true,
+    onStep: printStep,
   });
 
   console.log(`Scenario: ${result.scenarioId}`);
   console.log(`Seed: ${result.seed}`);
   console.log("");
-
-  for (const turn of result.trace.turns) {
-    console.log(`Turn ${turn.turn}`);
-    console.log(turn.board);
-    console.log("Events:");
-    for (const event of turn.events) {
-      console.log(`- ${JSON.stringify(event)}`);
-    }
-    console.log("");
-  }
 
   console.log("LLM Decisions:");
   for (const decision of playerPolicy.getDecisionTrace()) {

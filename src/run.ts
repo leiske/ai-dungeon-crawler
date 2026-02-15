@@ -7,6 +7,8 @@ import {
   finalizeTurn,
 } from "./sim.ts";
 import type {
+  Action,
+  ActorType,
   EnemyController,
   EpisodeResult,
   PlayerActionIntent,
@@ -15,12 +17,29 @@ import type {
   SimulationEvent,
 } from "./types.ts";
 
+export type EpisodeStepPhase =
+  | "TURN_START"
+  | "PLAYER_ACTION_APPLIED"
+  | "ENEMY_ACTION_APPLIED"
+  | "TURN_FINALIZED";
+
+export interface EpisodeStep {
+  turn: number;
+  phase: EpisodeStepPhase;
+  actorType?: ActorType;
+  actorId?: number;
+  action?: Action;
+  events: SimulationEvent[];
+  board: string;
+}
+
 export interface RunEpisodeOptions {
   scenario: ScenarioDefinition;
   seed: number;
   playerPolicy: PlayerPolicy;
   enemyController: EnemyController;
   traceEnabled?: boolean;
+  onStep?: (step: EpisodeStep) => void | Promise<void>;
 }
 
 function assertTerminalOutcome(
@@ -34,6 +53,17 @@ function assertTerminalOutcome(
 
 function sortById<T extends { id: number }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.id - b.id);
+}
+
+async function emitEpisodeStep(
+  options: RunEpisodeOptions,
+  step: EpisodeStep,
+): Promise<void> {
+  if (!options.onStep) {
+    return;
+  }
+
+  await options.onStep(step);
 }
 
 export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeResult> {
@@ -50,6 +80,13 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     const turnEvents: SimulationEvent[] = [];
     const turnNumber = state.turn;
 
+    await emitEpisodeStep(options, {
+      turn: turnNumber,
+      phase: "TURN_START",
+      events: [],
+      board: render(state),
+    });
+
     const alivePlayers = sortById(state.players.filter((player) => player.hp > 0));
     const playerIntents: PlayerActionIntent[] = [];
 
@@ -62,9 +99,21 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
       });
     }
 
-    const playerPhaseResult = applyPlayerPhase(state, playerIntents);
-    state = playerPhaseResult.state;
-    turnEvents.push(...playerPhaseResult.events);
+    for (const playerIntent of playerIntents) {
+      const playerPhaseResult = applyPlayerPhase(state, [playerIntent]);
+      state = playerPhaseResult.state;
+      turnEvents.push(...playerPhaseResult.events);
+
+      await emitEpisodeStep(options, {
+        turn: turnNumber,
+        phase: "PLAYER_ACTION_APPLIED",
+        actorType: "player",
+        actorId: playerIntent.playerId,
+        action: playerIntent.action,
+        events: playerPhaseResult.events,
+        board: render(state),
+      });
+    }
 
     const aliveEnemies = sortById(state.enemies.filter((enemy) => enemy.hp > 0));
 
@@ -73,17 +122,36 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
       const enemyResult = applyEnemyAction(state, enemy.id, enemyAction);
       state = enemyResult.state;
       turnEvents.push(...enemyResult.events);
+
+      await emitEpisodeStep(options, {
+        turn: turnNumber,
+        phase: "ENEMY_ACTION_APPLIED",
+        actorType: "enemy",
+        actorId: enemy.id,
+        action: enemyAction,
+        events: enemyResult.events,
+        board: render(state),
+      });
     }
 
     const finalizationResult = finalizeTurn(state);
     state = finalizationResult.state;
     turnEvents.push(...finalizationResult.events);
 
+    const finalizedBoard = render(state);
+
+    await emitEpisodeStep(options, {
+      turn: turnNumber,
+      phase: "TURN_FINALIZED",
+      events: finalizationResult.events,
+      board: finalizedBoard,
+    });
+
     if (traceEnabled) {
       trace.turns.push({
         turn: turnNumber,
         events: turnEvents,
-        board: render(state),
+        board: finalizedBoard,
       });
     }
   }
@@ -117,6 +185,7 @@ export async function runEpisodes(
       playerPolicy: options.playerPolicy,
       enemyController: options.enemyController,
       traceEnabled: options.traceEnabled,
+      onStep: options.onStep,
     });
     results.push(result);
   }
