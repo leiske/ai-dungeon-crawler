@@ -6,6 +6,8 @@ Turn based gameplay
 
 Simple goal: Get to the exit alive
 
+I am vibe coding this, apologies
+
 ```bash
 bun install
 ```
