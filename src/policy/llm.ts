@@ -16,6 +16,8 @@ const SYSTEM_PROMPT = [
   '{"kind":"MOVE","direction":"N|S|E|W"}',
   '{"kind":"ATTACK","direction":"N|S|E|W"}',
   '{"kind":"USE_ITEM","itemId":"potion"}',
+  "Keep action fields at the top level.",
+  "You may optionally include decision: {goal, keyObservations, risk, confidence, whyThisAction}.",
   "Use visitedPositions to reduce unnecessary backtracking when safe.",
   "Do not include markdown fences or commentary.",
 ].join("\n");
@@ -23,11 +25,15 @@ const SYSTEM_PROMPT = [
 export interface LlmDecisionTrace {
   turn: number;
   action: PlayerAction;
+  decision?: LlmDecision;
   latencyMs: number;
+  rawJsonSnippet: string;
   rawResponse: string;
+  thinking: string[];
   stopReason?: string;
   modelErrorMessage?: string;
   fallbackReason?: string;
+  decisionParseError?: string;
   tokenUsage: {
     input: number;
     output: number;
@@ -35,14 +41,26 @@ export interface LlmDecisionTrace {
   };
 }
 
+export interface LlmDecision {
+  goal: string;
+  keyObservations: string[];
+  risk: string;
+  confidence: number;
+  whyThisAction: string;
+}
+
 export interface CodexPolicyOptions {
   authPath?: string;
   reasoning?: ThinkingLevel;
+  onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
 }
 
 interface ParseActionResult {
   action: PlayerAction | null;
+  decision?: LlmDecision;
+  rawJsonSnippet: string;
   reason?: string;
+  decisionParseError?: string;
 }
 
 const directionSchema = z.enum(["N", "S", "E", "W"]);
@@ -55,6 +73,20 @@ const llmActionSchema = z.discriminatedUnion("kind", [
 ]);
 
 type LlmActionPayload = z.infer<typeof llmActionSchema>;
+
+const decisionSchema = z
+  .object({
+    goal: z.string().trim().min(1).max(180),
+    keyObservations: z.array(z.string().trim().min(1).max(180)).min(1).max(5),
+    risk: z.string().trim().min(1).max(180),
+    confidence: z.number().min(0).max(1),
+    whyThisAction: z.string().trim().min(1).max(240),
+  })
+  .strict();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function describeSchemaError(error: z.ZodError): string {
   const issue = error.issues[0];
@@ -79,14 +111,24 @@ function toPlayerAction(action: LlmActionPayload): PlayerAction {
   }
 }
 
-function extractTextContent(message: AssistantMessage): string {
-  const segments: string[] = [];
+function extractMessageContent(message: AssistantMessage): {
+  text: string;
+  thinking: string[];
+} {
+  const textSegments: string[] = [];
+  const thinkingSegments: string[] = [];
   for (const content of message.content) {
     if (content.type === "text") {
-      segments.push(content.text);
+      textSegments.push(content.text);
+    }
+    if (content.type === "thinking") {
+      thinkingSegments.push(content.thinking);
     }
   }
-  return segments.join("\n").trim();
+  return {
+    text: textSegments.join("\n").trim(),
+    thinking: thinkingSegments.map((segment) => segment.trim()).filter((segment) => segment.length > 0),
+  };
 }
 
 function extractJsonSnippet(text: string): string | null {
@@ -155,34 +197,66 @@ function extractJsonSnippet(text: string): string | null {
 }
 
 function parseActionObject(value: unknown): ParseActionResult {
-  const parsed = llmActionSchema.safeParse(value);
-  if (!parsed.success) {
-    return { action: null, reason: describeSchemaError(parsed.error) };
+  if (!isRecord(value)) {
+    return { action: null, rawJsonSnippet: "", reason: "action payload must be an object" };
   }
 
-  return { action: toPlayerAction(parsed.data) };
+  const { decision: decisionValue, ...actionPayload } = value;
+  const parsed = llmActionSchema.safeParse(actionPayload);
+  if (!parsed.success) {
+    return {
+      action: null,
+      rawJsonSnippet: "",
+      reason: describeSchemaError(parsed.error),
+    };
+  }
+
+  let decision: LlmDecision | undefined;
+  let decisionParseError: string | undefined;
+  if (decisionValue !== undefined) {
+    const parsedDecision = decisionSchema.safeParse(decisionValue);
+    if (parsedDecision.success) {
+      decision = parsedDecision.data;
+    } else {
+      decisionParseError = describeSchemaError(parsedDecision.error);
+    }
+  }
+
+  return {
+    action: toPlayerAction(parsed.data),
+    decision,
+    rawJsonSnippet: "",
+    decisionParseError,
+  };
 }
 
 function parseActionFromText(text: string): ParseActionResult {
   const jsonSnippet = extractJsonSnippet(text);
   if (!jsonSnippet) {
-    return { action: null, reason: "response does not contain JSON" };
+    return { action: null, rawJsonSnippet: "", reason: "response does not contain JSON" };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonSnippet);
   } catch {
-    return { action: null, reason: "invalid JSON" };
+    return { action: null, rawJsonSnippet: jsonSnippet, reason: "invalid JSON" };
   }
 
-  return parseActionObject(parsed);
+  const action = parseActionObject(parsed);
+  return {
+    ...action,
+    rawJsonSnippet: jsonSnippet,
+  };
 }
 
 function buildPrompt(observation: Observation): string {
   return [
     "Choose the next action from the current observation.",
     "Objective: stay alive and reach the exit tile if possible.",
+    "Return the action fields at the top level exactly as one of the allowed outputs.",
+    "You may include an optional 'decision' object with keys: goal, keyObservations, risk, confidence (0..1), whyThisAction.",
+    "Keep decision concise.",
     "visitedPositions lists coordinates you have already visited.",
     "Observation JSON:",
     JSON.stringify(observation),
@@ -201,14 +275,32 @@ export class LlmCodexPolicy implements PlayerPolicy {
   private readonly decisionTrace: LlmDecisionTrace[] = [];
   private readonly authPath?: string;
   private readonly reasoning: ThinkingLevel;
+  private readonly onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
 
   public constructor(options: CodexPolicyOptions = {}) {
     this.authPath = options.authPath;
     this.reasoning = options.reasoning ?? "low";
+    this.onDecision = options.onDecision;
   }
 
   public getDecisionTrace(): readonly LlmDecisionTrace[] {
     return [...this.decisionTrace];
+  }
+
+  public getReasoningLevel(): ThinkingLevel {
+    return this.reasoning;
+  }
+
+  private async emitDecision(trace: LlmDecisionTrace): Promise<void> {
+    if (!this.onDecision) {
+      return;
+    }
+
+    try {
+      await this.onDecision(trace);
+    } catch {
+      // Decision logging must never break action selection.
+    }
   }
 
   public async chooseAction(observation: Observation): Promise<PlayerAction> {
@@ -236,7 +328,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
         },
       );
 
-      const rawResponse = extractTextContent(response);
+      const { text: rawResponse, thinking } = extractMessageContent(response);
       const stopReason = response.stopReason;
       const modelErrorMessage = response.errorMessage;
 
@@ -244,6 +336,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
       if (stopReason === "error") {
         parsed = {
           action: null,
+          rawJsonSnippet: "",
           reason: modelErrorMessage
             ? `llm_stop_error: ${modelErrorMessage}`
             : "llm_stop_error: model returned stopReason=error",
@@ -254,28 +347,37 @@ export class LlmCodexPolicy implements PlayerPolicy {
 
       const action = parsed.action ?? WAIT_ACTION;
 
-      this.decisionTrace.push({
+      const trace: LlmDecisionTrace = {
         turn: observation.turn,
         action,
+        decision: parsed.decision,
         latencyMs: Date.now() - startedAt,
+        rawJsonSnippet: parsed.rawJsonSnippet,
         rawResponse,
+        thinking,
         stopReason,
         modelErrorMessage,
         fallbackReason: parsed.reason,
+        decisionParseError: parsed.decisionParseError,
         tokenUsage: {
           input: response.usage.input,
           output: response.usage.output,
           total: response.usage.totalTokens,
         },
-      });
+      };
+
+      this.decisionTrace.push(trace);
+      await this.emitDecision(trace);
 
       return action;
     } catch (error) {
-      this.decisionTrace.push({
+      const trace: LlmDecisionTrace = {
         turn: observation.turn,
         action: WAIT_ACTION,
         latencyMs: Date.now() - startedAt,
+        rawJsonSnippet: "",
         rawResponse: "",
+        thinking: [],
         stopReason: "error",
         modelErrorMessage: describeError(error),
         fallbackReason: `llm_error: ${describeError(error)}`,
@@ -284,7 +386,10 @@ export class LlmCodexPolicy implements PlayerPolicy {
           output: 0,
           total: 0,
         },
-      });
+      };
+
+      this.decisionTrace.push(trace);
+      await this.emitDecision(trace);
 
       return WAIT_ACTION;
     }
