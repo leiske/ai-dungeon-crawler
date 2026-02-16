@@ -10,11 +10,13 @@ import type {
 } from "../llm-events.ts";
 import { getOpenAICodexApiKey } from "../llm/auth.ts";
 import type { Observation, PlayerAction, PlayerPolicy } from "../types.ts";
+import { DEFAULT_PERSONA_ID, getPersonaById } from "./persona.ts";
+import type { PersonaDefinition } from "./persona.ts";
 
 const MODEL_PROVIDER = "openai-codex" as const;
 const MODEL_ID = "gpt-5.3-codex" as const;
 
-const SYSTEM_PROMPT = [
+const CORE_SYSTEM_DIRECTIVES = [
   "You are a tactical policy for a deterministic dungeon crawler.",
   "Return exactly one JSON object and nothing else.",
   "Allowed outputs:",
@@ -33,11 +35,16 @@ const SYSTEM_PROMPT = [
   "Input payload uses compact keys and tuples:",
   't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]], vm = memory {w,j}.',
   "tileCode uses F/W/E. kindCode uses m for enemy and p for player.",
-  "Goal: reach the exit alive.",
-  "Choose actions autonomously from the current state.",
   "If you include memory, use object entries, never plain strings.",
   "Do not include markdown fences or commentary.",
-].join("\n");
+] as const;
+
+const CORE_TURN_DIRECTIVES = [
+  "Select the next action from the allowed action schema.",
+  "Goal: reach the exit alive.",
+  "Choose actions autonomously from the current state and memory.",
+  "Use the compact payload below.",
+] as const;
 
 export interface LlmDecisionTrace {
   turn: number;
@@ -117,6 +124,7 @@ const MEMORY_TEXT_PATTERN = /^[^\r\n]+$/;
 export interface CodexPolicyOptions {
   authPath?: string;
   reasoning?: ThinkingLevel;
+  personaId?: string;
   onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
   onEvent?: LlmEventHandler;
 }
@@ -622,13 +630,19 @@ export function compactObservationForPrompt(
   };
 }
 
-function buildPrompt(observation: Observation, promptMemory: CompactPromptMemory): string {
+function buildSystemPrompt(persona: PersonaDefinition): string {
+  return [...CORE_SYSTEM_DIRECTIVES, ...persona.systemDirectives].join("\n");
+}
+
+function buildPrompt(
+  observation: Observation,
+  promptMemory: CompactPromptMemory,
+  persona: PersonaDefinition,
+): string {
   const compactObservation = compactObservationForPrompt(observation, promptMemory);
   return [
-    "Select the next action from the allowed action schema.",
-    "Goal: reach the exit alive.",
-    "Use your own strategy based on the current state and memory.",
-    "Use the compact payload below.",
+    ...CORE_TURN_DIRECTIVES,
+    ...persona.turnDirectives,
     "State JSON:",
     JSON.stringify(compactObservation),
   ].join("\n");
@@ -650,12 +664,14 @@ export class LlmCodexPolicy implements PlayerPolicy {
   };
   private readonly authPath?: string;
   private readonly reasoning: ThinkingLevel;
+  private readonly persona: PersonaDefinition;
   private readonly onDecision?: (trace: LlmDecisionTrace) => void | Promise<void>;
   private readonly onEvent?: LlmEventHandler;
 
   public constructor(options: CodexPolicyOptions = {}) {
     this.authPath = options.authPath;
     this.reasoning = options.reasoning ?? "low";
+    this.persona = getPersonaById(options.personaId ?? DEFAULT_PERSONA_ID);
     this.onDecision = options.onDecision;
     this.onEvent = options.onEvent;
   }
@@ -666,6 +682,18 @@ export class LlmCodexPolicy implements PlayerPolicy {
 
   public getReasoningLevel(): ThinkingLevel {
     return this.reasoning;
+  }
+
+  public getPersonaId(): string {
+    return this.persona.id;
+  }
+
+  public getPersonaDescription(): string {
+    return this.persona.description;
+  }
+
+  public getTemperature(): number {
+    return this.persona.temperature;
   }
 
   private async emitDecision(trace: LlmDecisionTrace): Promise<void> {
@@ -696,7 +724,8 @@ export class LlmCodexPolicy implements PlayerPolicy {
     const startedAt = Date.now();
     const playerId = observation.self.id;
     const promptMemory = selectMemoryForPrompt(this.memory, observation.turn);
-    const prompt = buildPrompt(observation, promptMemory);
+    const prompt = buildPrompt(observation, promptMemory, this.persona);
+    const systemPrompt = buildSystemPrompt(this.persona);
 
     await this.emitEvent({
       type: "LLM_REQUEST_STARTED",
@@ -709,7 +738,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
       const stream = streamSimple(
         this.model,
         {
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt,
           messages: [
             {
               role: "user",
@@ -721,6 +750,7 @@ export class LlmCodexPolicy implements PlayerPolicy {
         {
           apiKey,
           reasoning: this.reasoning,
+          temperature: this.persona.temperature,
           maxTokens: 320,
         },
       );

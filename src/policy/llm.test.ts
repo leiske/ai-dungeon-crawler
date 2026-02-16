@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { compactObservationForPrompt } from "./llm.ts";
+import { compactObservationForPrompt, LlmCodexPolicy } from "./llm.ts";
+import { DEFAULT_PERSONA_ID, getPersonaById } from "./persona.ts";
 import type { Observation } from "../types.ts";
 
 test("compactObservationForPrompt compacts keys and limits visited positions to last 10", () => {
@@ -55,4 +56,14 @@ test("compactObservationForPrompt compacts keys and limits visited positions to 
       j: [],
     },
   });
+});
+
+test("LlmCodexPolicy uses the default persona when none is provided", () => {
+  const policy = new LlmCodexPolicy();
+  expect(policy.getPersonaId()).toBe(DEFAULT_PERSONA_ID);
+  expect(policy.getTemperature()).toBe(getPersonaById(DEFAULT_PERSONA_ID).temperature);
+});
+
+test("LlmCodexPolicy rejects unknown persona ids", () => {
+  expect(() => new LlmCodexPolicy({ personaId: "unknown-persona" })).toThrow(/Unknown persona/);
 });

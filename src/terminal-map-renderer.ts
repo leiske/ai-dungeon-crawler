@@ -40,6 +40,7 @@ interface MemoryPaneModel {
 interface FrameModel {
   state: GameState;
   statusLine: string;
+  personaId: string;
   combatLog: readonly string[];
   llm: LlmPaneModel;
   memory: MemoryPaneModel;
@@ -383,7 +384,7 @@ function buildFrame(model: FrameModel): string {
   const displayWidth = terminalWidth > 0 ? terminalWidth : 120;
   const boardLines = centerLinesHorizontally(render(model.state).split("\n"), displayWidth);
 
-  const topLines = [`Status ${model.statusLine}`, "", "", "", ...boardLines, ""];
+  const topLines = [`Status ${model.statusLine} | persona=${model.personaId}`, "", "", "", ...boardLines, ""];
   const bottomLayout = computeBottomLayout(displayWidth);
   const bottomLines = mergeColumns(
     buildCombatPaneLines(model.combatLog, bottomLayout.leftWidth),
@@ -412,6 +413,7 @@ function buildFrame(model: FrameModel): string {
 }
 
 export class TerminalMapRenderer {
+  private readonly personaId: string;
   private state: GameState | null = null;
   private statusLine = "starting";
   private spinnerActive = false;
@@ -430,6 +432,10 @@ export class TerminalMapRenderer {
   private readonly memoryCommitRows: string[] = [];
 
   private deltaRenderTimer: ReturnType<typeof setTimeout> | null = null;
+
+  public constructor(personaId: string) {
+    this.personaId = personaId;
+  }
 
   private appendCombatLog(line: string): void {
     this.combatLog.push(line);
@@ -631,6 +637,7 @@ export class TerminalMapRenderer {
     const frame = buildFrame({
       state: this.state,
       statusLine: this.getDisplayStatusLine(),
+      personaId: this.personaId,
       combatLog: this.combatLog,
       llm: {
         statusLine: this.llmStatusLine,

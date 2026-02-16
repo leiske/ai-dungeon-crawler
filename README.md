@@ -18,4 +18,18 @@ To run:
 bun run index.ts
 ```
 
+Select a persona:
+
+```bash
+bun run index.ts --persona cautious-scout --max-turns 5
+```
+
+Try an aggressive style:
+
+```bash
+bun run index.ts --persona aggressive-barbarian --max-turns 5
+```
+
+Each persona carries its own sampling temperature, which is applied automatically when querying the model.
+
 This project was created using `bun init` in bun v1.3.0. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.

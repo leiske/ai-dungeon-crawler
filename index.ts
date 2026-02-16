@@ -9,6 +9,7 @@ import type { ScenarioDefinition } from "./src/types.ts";
 interface CliOptions {
   maxTurns?: number;
   minimalLogs: boolean;
+  personaId?: string;
 }
 
 function parsePositiveInteger(value: string, flag: string): number {
@@ -27,6 +28,7 @@ function parsePositiveInteger(value: string, flag: string): number {
 function parseCliOptions(argv: readonly string[]): CliOptions {
   let maxTurns: number | undefined;
   let minimalLogs = false;
+  let personaId: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -57,9 +59,28 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       minimalLogs = true;
       continue;
     }
+
+    if (arg === "--persona") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error("Missing value for --persona. Usage: --persona <id>");
+      }
+      personaId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--persona=")) {
+      const value = arg.slice("--persona=".length);
+      if (value.length === 0) {
+        throw new Error("Missing value for --persona. Usage: --persona <id>");
+      }
+      personaId = value;
+      continue;
+    }
   }
 
-  return { maxTurns, minimalLogs };
+  return { maxTurns, minimalLogs, personaId };
 }
 
 function applyScenarioOverrides(
@@ -147,6 +168,9 @@ async function writeRunArtifact(params: {
   scenarioId: string;
   seed: number;
   reasoning: string;
+  personaId: string;
+  personaDescription: string;
+  temperature: number;
   decisions: readonly LlmDecisionTrace[];
   result: Awaited<ReturnType<typeof runEpisode>>;
 }): Promise<string> {
@@ -163,6 +187,11 @@ async function writeRunArtifact(params: {
       modelProvider: "openai-codex",
       modelId: "gpt-5.3-codex",
       reasoning: params.reasoning,
+      temperature: params.temperature,
+      persona: {
+        id: params.personaId,
+        description: params.personaDescription,
+      },
     },
     result: {
       outcome: params.result.outcome,
@@ -181,12 +210,17 @@ export async function main(): Promise<void> {
   const seed = 42;
   const scenario = applyScenarioOverrides(createScenario(seed), options);
   const boardViewEnabled = !options.minimalLogs;
-  const renderer = boardViewEnabled ? new TerminalMapRenderer() : undefined;
+  let renderer: TerminalMapRenderer | undefined;
   const playerPolicy = new LlmCodexPolicy({
     reasoning: "low",
+    personaId: options.personaId,
     onDecision: options.minimalLogs ? logLiveDecision : undefined,
-    onEvent: renderer ? (event) => renderer.consumeLlmEvent(event) : undefined,
+    onEvent: boardViewEnabled ? (event) => renderer?.consumeLlmEvent(event) : undefined,
   });
+
+  if (boardViewEnabled) {
+    renderer = new TerminalMapRenderer(playerPolicy.getPersonaId());
+  }
 
   const result = await (async () => {
     try {
@@ -206,6 +240,8 @@ export async function main(): Promise<void> {
   console.log(`Scenario: ${result.scenarioId}`);
   console.log(`Seed: ${result.seed}`);
   console.log(`View: ${boardViewEnabled ? "board" : "llm-only"}`);
+  console.log(`Persona: ${playerPolicy.getPersonaId()} - ${playerPolicy.getPersonaDescription()}`);
+  console.log(`Temperature: ${playerPolicy.getTemperature()}`);
   console.log("");
 
   console.log("LLM Decisions:");
@@ -239,6 +275,9 @@ export async function main(): Promise<void> {
     scenarioId: scenario.id,
     seed,
     reasoning: playerPolicy.getReasoningLevel(),
+    personaId: playerPolicy.getPersonaId(),
+    personaDescription: playerPolicy.getPersonaDescription(),
+    temperature: playerPolicy.getTemperature(),
     decisions: playerPolicy.getDecisionTrace(),
     result,
   });
