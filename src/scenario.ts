@@ -1,18 +1,16 @@
 import { generateDungeon } from "./dungeon-generator.ts";
 import type { Enemy, ScenarioDefinition } from "./types.ts";
 
-function createInitialEnemies(enemyStart: { x: number; y: number }): Enemy[] {
-  return [
-    {
-      kind: "enemy",
-      id: 101,
-      x: enemyStart.x,
-      y: enemyStart.y,
-      hp: 5,
-      maxHp: 5,
-      attackDamage: 2,
-    },
-  ];
+function createInitialEnemies(enemyStarts: Array<{ x: number; y: number }>): Enemy[] {
+  return enemyStarts.map((enemyStart, index) => ({
+    kind: "enemy",
+    id: 101 + index,
+    x: enemyStart.x,
+    y: enemyStart.y,
+    hp: 5,
+    maxHp: 5,
+    attackDamage: 2,
+  }));
 }
 
 export function createScenario(seed: number): ScenarioDefinition {
@@ -38,10 +36,10 @@ export function createScenario(seed: number): ScenarioDefinition {
         visitedPositions: [],
       },
     ],
-    enemies: createInitialEnemies(dungeon.enemyStart),
+    enemies: createInitialEnemies(dungeon.enemyStarts),
     rules: {
       maxTurns: 50,
-      visionRadius: 5,
+      visionRadius: 6,
       playerAttackDamage: 3,
       potionHealAmount: 5,
     },

@@ -2,6 +2,7 @@ import { createAttackAction, createMoveAction, WAIT_ACTION } from "../action-uti
 import {
   DIRECTION_DELTAS,
   getAdjacentDirection,
+  hasLineOfSight,
   isInBounds,
   isOccupiedByAliveEntity,
   isWalkable,
@@ -15,6 +16,8 @@ interface FrontierCell {
   y: number;
   firstDirection: Direction;
 }
+
+const ENEMY_AGGRO_RADIUS = 6;
 
 function toPositionKey(x: number, y: number): string {
   return `${x},${y}`;
@@ -117,6 +120,18 @@ function sortPlayersByPriority(players: Player[], enemyX: number, enemyY: number
   });
 }
 
+function canEnemyDetectPlayer(
+  state: GameState,
+  enemy: Pick<GameState["enemies"][number], "x" | "y">,
+  player: Pick<Player, "x" | "y">,
+): boolean {
+  if (manhattanDistance(enemy.x, enemy.y, player.x, player.y) > ENEMY_AGGRO_RADIUS) {
+    return false;
+  }
+
+  return hasLineOfSight(state, enemy.x, enemy.y, player.x, player.y);
+}
+
 export class GreedyEnemyController implements EnemyController {
   public chooseAction(state: GameState, enemyId: number): EnemyAction {
     const enemy = state.enemies.find((candidate) => candidate.id === enemyId);
@@ -129,14 +144,33 @@ export class GreedyEnemyController implements EnemyController {
       return WAIT_ACTION;
     }
 
-    const [target] = sortPlayersByPriority(alivePlayers, enemy.x, enemy.y);
-    if (!target) {
-      return WAIT_ACTION;
+    const adjacentPlayers = sortPlayersByPriority(
+      alivePlayers.filter((player) => manhattanDistance(enemy.x, enemy.y, player.x, player.y) === 1),
+      enemy.x,
+      enemy.y,
+    );
+
+    const adjacentTarget = adjacentPlayers[0];
+    if (adjacentTarget) {
+      const adjacentDirection = getAdjacentDirection(enemy.x, enemy.y, adjacentTarget.x, adjacentTarget.y);
+      if (!adjacentDirection) {
+        throw new Error(
+          `Adjacent target (${adjacentTarget.x}, ${adjacentTarget.y}) is not cardinally adjacent to enemy ${enemy.id}.`,
+        );
+      }
+
+      return createAttackAction(adjacentDirection);
     }
 
-    const adjacentDirection = getAdjacentDirection(enemy.x, enemy.y, target.x, target.y);
-    if (adjacentDirection) {
-      return createAttackAction(adjacentDirection);
+    const visibleTargets = sortPlayersByPriority(
+      alivePlayers.filter((player) => canEnemyDetectPlayer(state, enemy, player)),
+      enemy.x,
+      enemy.y,
+    );
+
+    const target = visibleTargets[0];
+    if (!target) {
+      return WAIT_ACTION;
     }
 
     const direction = choosePathDirection(state, enemy, target);

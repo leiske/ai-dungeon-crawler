@@ -16,7 +16,7 @@ import type {
   SimulationEvent,
 } from "./types.ts";
 
-const ENEMY_THINK_DELAY_MS = 250;
+const ENEMY_THINK_DELAY_MS = 50;
 
 export interface RunEpisodeOptions {
   scenario: ScenarioDefinition;
