@@ -9,12 +9,11 @@ import type {
   LlmWorkingMemoryEntry,
 } from "../llm-events.ts";
 import { getOpenAICodexApiKey } from "../llm/auth.ts";
+import { OPENAI_CODEX_MODEL_ID, OPENAI_CODEX_MODEL_PROVIDER } from "../llm/model.ts";
 import type { Observation, PlayerAction, PlayerPolicy } from "../types.ts";
 import { DEFAULT_PERSONA_ID, getPersonaById } from "./persona.ts";
 import type { PersonaDefinition } from "./persona.ts";
 
-const MODEL_PROVIDER = "openai-codex" as const;
-const MODEL_ID = "gpt-5.3-codex" as const;
 
 const CORE_SYSTEM_DIRECTIVES = [
   "You are a tactical policy for a deterministic dungeon crawler.",
@@ -657,7 +656,7 @@ function describeError(error: unknown): string {
 }
 
 export class LlmCodexPolicy implements PlayerPolicy {
-  private readonly model = getModel(MODEL_PROVIDER, MODEL_ID);
+  private readonly model = getModel(OPENAI_CODEX_MODEL_PROVIDER, OPENAI_CODEX_MODEL_ID);
   private readonly decisionTrace: LlmDecisionTrace[] = [];
   private memory: PolicyMemoryState = {
     working: [],
