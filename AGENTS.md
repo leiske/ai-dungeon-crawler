@@ -5,3 +5,4 @@
 * don't add "fallbacks"
 * do not write tests unless explicitly asked to.
 * no flattery like "love it", "great prompt", "love this direction"
+* prefer ./tmp/ instead of /tmp/ for temporary files
