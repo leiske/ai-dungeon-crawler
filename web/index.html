@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Dungeon Crawler Viewer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="controls panel">
+        <h1>AI Dungeon Crawler</h1>
+        <form id="run-form">
+          <label class="field">
+            <span>Persona</span>
+            <select id="persona-id" name="personaId"></select>
+          </label>
+          <label class="field">
+            <span>Seed</span>
+            <input id="seed" name="seed" type="number" value="42" min="0" step="1" />
+          </label>
+          <label class="field">
+            <span>Max Turns</span>
+            <input id="max-turns" name="maxTurns" type="number" value="5" min="1" step="1" />
+          </label>
+          <button id="start-run" type="submit">Start Run</button>
+        </form>
+        <p id="status-text">Idle</p>
+      </section>
+
+      <section class="board panel">
+        <h2>Board Snapshot</h2>
+        <pre id="board">Waiting for state...</pre>
+      </section>
+
+      <section class="logs">
+        <div class="panel">
+          <h2>Episode Events</h2>
+          <pre id="episode-log"></pre>
+        </div>
+        <div class="panel">
+          <h2>LLM Events</h2>
+          <pre id="llm-log"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

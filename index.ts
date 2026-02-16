@@ -170,7 +170,6 @@ async function writeRunArtifact(params: {
   reasoning: string;
   personaId: string;
   personaDescription: string;
-  temperature: number;
   decisions: readonly LlmDecisionTrace[];
   result: Awaited<ReturnType<typeof runEpisode>>;
 }): Promise<string> {
@@ -187,7 +186,6 @@ async function writeRunArtifact(params: {
       modelProvider: "openai-codex",
       modelId: "gpt-5.3-codex",
       reasoning: params.reasoning,
-      temperature: params.temperature,
       persona: {
         id: params.personaId,
         description: params.personaDescription,
@@ -241,7 +239,6 @@ export async function main(): Promise<void> {
   console.log(`Seed: ${result.seed}`);
   console.log(`View: ${boardViewEnabled ? "board" : "llm-only"}`);
   console.log(`Persona: ${playerPolicy.getPersonaId()} - ${playerPolicy.getPersonaDescription()}`);
-  console.log(`Temperature: ${playerPolicy.getTemperature()}`);
   console.log("");
 
   console.log("LLM Decisions:");
@@ -277,7 +274,6 @@ export async function main(): Promise<void> {
     reasoning: playerPolicy.getReasoningLevel(),
     personaId: playerPolicy.getPersonaId(),
     personaDescription: playerPolicy.getPersonaDescription(),
-    temperature: playerPolicy.getTemperature(),
     decisions: playerPolicy.getDecisionTrace(),
     result,
   });

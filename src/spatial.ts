@@ -50,6 +50,68 @@ export function isWall(state: GameState, x: number, y: number): boolean {
   return getTile(state, x, y) === "WALL";
 }
 
+export function isOpaqueTile(tile: Tile | null): boolean {
+  return tile === "WALL";
+}
+
+export function hasLineOfSight(
+  state: GameState,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): boolean {
+  if (!isInBounds(state, fromX, fromY) || !isInBounds(state, toX, toY)) {
+    return false;
+  }
+
+  let currentX = fromX;
+  let currentY = fromY;
+  const deltaX = Math.abs(toX - fromX);
+  const deltaY = Math.abs(toY - fromY);
+  const stepX = fromX < toX ? 1 : -1;
+  const stepY = fromY < toY ? 1 : -1;
+  let error = deltaX - deltaY;
+
+  while (currentX !== toX || currentY !== toY) {
+    const previousX = currentX;
+    const previousY = currentY;
+    const doubledError = error * 2;
+    let movedX = false;
+    let movedY = false;
+
+    if (doubledError > -deltaY) {
+      error -= deltaY;
+      currentX += stepX;
+      movedX = true;
+    }
+
+    if (doubledError < deltaX) {
+      error += deltaX;
+      currentY += stepY;
+      movedY = true;
+    }
+
+    if (movedX && movedY) {
+      const horizontalStepTile = getTile(state, previousX + stepX, previousY);
+      const verticalStepTile = getTile(state, previousX, previousY + stepY);
+      if (isOpaqueTile(horizontalStepTile) && isOpaqueTile(verticalStepTile)) {
+        return false;
+      }
+    }
+
+    if (currentX === toX && currentY === toY) {
+      return true;
+    }
+
+    if (isOpaqueTile(getTile(state, currentX, currentY))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function isWalkable(state: GameState, x: number, y: number): boolean {
   const tile = getTile(state, x, y);
   return tile !== null && tile !== "WALL";

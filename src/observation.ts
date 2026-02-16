@@ -1,5 +1,9 @@
 import type { GameState, Observation } from "./types.ts";
-import { manhattanDistance } from "./spatial.ts";
+import { hasLineOfSight, manhattanDistance } from "./spatial.ts";
+
+function toPositionKey(x: number, y: number): string {
+  return `${x},${y}`;
+}
 
 export function getObservation(state: GameState, playerId: number): Observation {
   const player = state.players.find((candidate) => candidate.id === playerId);
@@ -10,8 +14,8 @@ export function getObservation(state: GameState, playerId: number): Observation 
 
   const radius = state.rules.visionRadius;
   const visibleTiles: Observation["visibleTiles"] = [];
+  const visiblePositionKeys = new Set<string>();
 
-  // this needs to eventually do some sort of FOV algo / raycasting to not see behind walls
   for (let y = player.y - radius; y <= player.y + radius; y += 1) {
     if (y < 0 || y >= state.map.height) {
       continue;
@@ -36,15 +40,19 @@ export function getObservation(state: GameState, playerId: number): Observation 
         continue;
       }
 
+      if (!hasLineOfSight(state, player.x, player.y, x, y)) {
+        continue;
+      }
+
       visibleTiles.push({
         x,
         y,
         tile,
       });
+      visiblePositionKeys.add(toPositionKey(x, y));
     }
   }
 
-  // Again - this should eventually be filtered by line of sight, but for now we just use the same radius as tiles
   const visibleEntities: Observation["visibleEntities"] = [];
 
   for (const otherPlayer of state.players) {
@@ -52,7 +60,7 @@ export function getObservation(state: GameState, playerId: number): Observation 
       continue;
     }
 
-    if (manhattanDistance(player.x, player.y, otherPlayer.x, otherPlayer.y) > radius) {
+    if (!visiblePositionKeys.has(toPositionKey(otherPlayer.x, otherPlayer.y))) {
       continue;
     }
 
@@ -71,7 +79,7 @@ export function getObservation(state: GameState, playerId: number): Observation 
       continue;
     }
 
-    if (manhattanDistance(player.x, player.y, enemy.x, enemy.y) > radius) {
+    if (!visiblePositionKeys.has(toPositionKey(enemy.x, enemy.y))) {
       continue;
     }
 

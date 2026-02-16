@@ -1,7 +1,6 @@
 export interface PersonaDefinition {
   id: string;
   description: string;
-  temperature: number;
   systemDirectives: readonly string[];
   turnDirectives: readonly string[];
 }
@@ -10,7 +9,6 @@ const CAUTIOUS_SCOUT_PERSONA: PersonaDefinition = {
   id: "cautious-scout",
   description:
     "Survival-first explorer that avoids unnecessary fights and advances safely toward the exit.",
-  temperature: 0.3,
   systemDirectives: [
     "You are a cautious scout in a hostile dungeon.",
     "Your personality is careful, observant, and survival-focused.",
@@ -27,7 +25,6 @@ const AGGRESSIVE_BARBARIAN_PERSONA: PersonaDefinition = {
   id: "aggressive-barbarian",
   description:
     "Relentless frontliner that pressures nearby enemies and accepts higher risk to keep momentum.",
-  temperature: 0.8,
   systemDirectives: [
     "You are an aggressive barbarian with bloodlust.",
     "Your personality is bold, confrontational, and action-first.",
@@ -40,9 +37,21 @@ const AGGRESSIVE_BARBARIAN_PERSONA: PersonaDefinition = {
   ],
 };
 
+const CAVEMAN_PERSONA: PersonaDefinition = {
+  id: "caveman",
+  description: "Primitive grunting persona with minimal language and sparse intent.",
+  systemDirectives: [
+    "Ugh. Grr. Unga bunga.",
+    "Think grunt. Speak grunt. No fancy talk.",
+    "Short words. Cave words. Smash words.",
+  ],
+  turnDirectives: ["Urgh.", "Grrr.", "Bunga.", "Grunt-think only."],
+};
+
 const PERSONAS: readonly PersonaDefinition[] = [
   CAUTIOUS_SCOUT_PERSONA,
   AGGRESSIVE_BARBARIAN_PERSONA,
+  CAVEMAN_PERSONA,
 ];
 
 export const DEFAULT_PERSONA_ID = CAUTIOUS_SCOUT_PERSONA.id;
@@ -53,7 +62,6 @@ function clonePersonaDefinition(persona: PersonaDefinition): PersonaDefinition {
   return {
     id: persona.id,
     description: persona.description,
-    temperature: persona.temperature,
     systemDirectives: [...persona.systemDirectives],
     turnDirectives: [...persona.turnDirectives],
   };

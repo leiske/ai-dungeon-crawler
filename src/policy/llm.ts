@@ -32,6 +32,7 @@ const CORE_SYSTEM_DIRECTIVES = [
   "journalAppends.kind must be one of persona|belief|long_goal|reflection.",
   "Each memory text must be concise single-line text.",
   "salience and confidence must be numbers in [0,1].",
+  "Keep all free-form text (decision fields, memory text, and thinking text) in the active persona voice.",
   "Input payload uses compact keys and tuples:",
   't = turn, s = [x,y,hp,maxHp,potionCount], vt = [[x,y,tileCode]], ve = [[id,kindCode,x,y,hp,maxHp]], vp = recent visited [[x,y]], vm = memory {w,j}.',
   "tileCode uses F/W/E. kindCode uses m for enemy and p for player.",
@@ -692,10 +693,6 @@ export class LlmCodexPolicy implements PlayerPolicy {
     return this.persona.description;
   }
 
-  public getTemperature(): number {
-    return this.persona.temperature;
-  }
-
   private async emitDecision(trace: LlmDecisionTrace): Promise<void> {
     if (!this.onDecision) {
       return;
@@ -750,7 +747,6 @@ export class LlmCodexPolicy implements PlayerPolicy {
         {
           apiKey,
           reasoning: this.reasoning,
-          temperature: this.persona.temperature,
           maxTokens: 320,
         },
       );

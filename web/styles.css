@@ -1,0 +1,150 @@
+:root {
+  --bg: #f5efe3;
+  --panel: #fff9ec;
+  --panel-border: #b18f61;
+  --text: #25170c;
+  --muted: #6d5032;
+  --accent: #5f4a2d;
+  --accent-ink: #f9f2e0;
+  --danger: #8f3021;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 20% 10%, #fff7e8 0%, var(--bg) 45%, #e7ddca 100%);
+}
+
+.page {
+  margin: 0 auto;
+  width: min(1200px, 100%);
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 0.9rem;
+  box-shadow: 0 4px 10px rgb(27 16 8 / 8%);
+}
+
+h1,
+h2 {
+  margin: 0 0 0.7rem;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  letter-spacing: 0.02em;
+}
+
+h1 {
+  font-size: 1.2rem;
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+.controls form {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+input,
+select,
+button {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid #a9855a;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  color: inherit;
+  background: #fffdf5;
+}
+
+button {
+  cursor: pointer;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: #49361f;
+  font-weight: 600;
+}
+
+button[disabled] {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+#status-text {
+  margin: 0.7rem 0 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+#board {
+  margin: 0;
+  min-height: 210px;
+  overflow: auto;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  color: #261307;
+}
+
+.logs {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.logs pre {
+  margin: 0;
+  min-height: 220px;
+  max-height: 420px;
+  overflow: auto;
+  padding: 0.55rem;
+  border: 1px solid #c8ae8a;
+  border-radius: 8px;
+  background: #fffef8;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error {
+  color: var(--danger);
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 0.65rem;
+  }
+
+  .controls form {
+    grid-template-columns: 1fr;
+  }
+
+  .logs pre {
+    max-height: 300px;
+  }
+}

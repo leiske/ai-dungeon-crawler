@@ -18,6 +18,14 @@ To run:
 bun run index.ts
 ```
 
+Web viewer (Elysia + SSE):
+
+```bash
+bun run web
+```
+
+Then open http://localhost:3000
+
 Select a persona:
 
 ```bash
@@ -30,6 +38,10 @@ Try an aggressive style:
 bun run index.ts --persona aggressive-barbarian --max-turns 5
 ```
 
-Each persona carries its own sampling temperature, which is applied automatically when querying the model.
+Try the caveman persona:
+
+```bash
+bun run index.ts --persona caveman --max-turns 5
+```
 
 This project was created using `bun init` in bun v1.3.0. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
