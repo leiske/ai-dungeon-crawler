@@ -1,3 +1,5 @@
+import { PhaserBoardRenderer } from "/phaser-board.js";
+
 const MAX_LOG_LINES = 240;
 const MAX_THINKING_LINE_LENGTH = 260;
 
@@ -41,8 +43,10 @@ if (
 
 let eventSource = null;
 let activeRunId = null;
+let lastBoardFingerprint = "";
 
 const llmThinkingBuffers = new Map();
+const boardRenderer = new PhaserBoardRenderer(ui.board);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,6 +87,13 @@ function appendLog(target, line) {
 function clearLogs() {
   ui.episodeLog.textContent = "";
   ui.llmLog.textContent = "";
+}
+
+function resetRunView() {
+  clearLogs();
+  llmThinkingBuffers.clear();
+  lastBoardFingerprint = "";
+  boardRenderer.reset();
 }
 
 function closeStream() {
@@ -198,68 +209,42 @@ function formatEpisodeLines(eventType, data) {
   }
 }
 
-function tileToChar(tile) {
-  switch (tile) {
-    case "WALL":
-      return "#";
-    case "FLOOR":
-      return ".";
-    case "EXIT":
-      return "E";
-    default:
-      return "?";
+function actorFingerprint(actor) {
+  return `${asNumber(actor.id, 0)}:${asNumber(actor.x, 0)}:${asNumber(actor.y, 0)}:${asNumber(actor.hp, 0)}`;
+}
+
+function stateFingerprint(state) {
+  if (!isRecord(state) || !isRecord(state.map)) {
+    return "";
   }
+
+  const players = Array.isArray(state.players) ? [...state.players] : [];
+  const enemies = Array.isArray(state.enemies) ? [...state.enemies] : [];
+
+  players.sort((a, b) => asNumber(a.id, 0) - asNumber(b.id, 0));
+  enemies.sort((a, b) => asNumber(a.id, 0) - asNumber(b.id, 0));
+
+  return [
+    `turn:${asNumber(state.turn, 0)}`,
+    `outcome:${asString(state.outcome, "UNKNOWN")}`,
+    `map:${asNumber(state.map.width, 0)}x${asNumber(state.map.height, 0)}`,
+    `p:${players.map((player) => actorFingerprint(player)).join("|")}`,
+    `e:${enemies.map((enemy) => actorFingerprint(enemy)).join("|")}`,
+  ].join(";");
 }
 
 function renderBoardFromState(state) {
-  if (!state || !state.map) {
-    ui.board.textContent = "Waiting for state...";
+  if (!isRecord(state)) {
     return;
   }
 
-  const lines = [];
-  for (let y = 0; y < state.map.height; y += 1) {
-    const row = state.map.tiles[y];
-    if (!row) {
-      continue;
-    }
-
-    const chars = [];
-    for (let x = 0; x < state.map.width; x += 1) {
-      chars.push(tileToChar(row[x]));
-    }
-    lines.push(chars.join(""));
+  const fingerprint = stateFingerprint(state);
+  if (fingerprint === lastBoardFingerprint) {
+    return;
   }
 
-  const board = lines.map((line) => line.split(""));
-
-  for (const enemy of state.enemies) {
-    if (enemy.hp <= 0) {
-      continue;
-    }
-
-    const row = board[enemy.y];
-    if (!row || row[enemy.x] === undefined) {
-      continue;
-    }
-
-    row[enemy.x] = "M";
-  }
-
-  for (const player of state.players) {
-    if (player.hp <= 0) {
-      continue;
-    }
-
-    const row = board[player.y];
-    if (!row || row[player.x] === undefined) {
-      continue;
-    }
-
-    row[player.x] = "P";
-  }
-
-  ui.board.textContent = board.map((row) => row.join("")).join("\n");
+  lastBoardFingerprint = fingerprint;
+  boardRenderer.applyState(state);
 }
 
 function thinkingKey(turn, playerId) {
@@ -536,6 +521,7 @@ async function attachActiveRunIfPresent() {
   }
 
   activeRunId = payload.run.runId;
+  resetRunView();
   renderBoardFromState(payload.run.latestState);
   setStatus(`Attached to active run ${activeRunId}`);
   ui.startButton.disabled = true;
@@ -560,7 +546,7 @@ ui.form.addEventListener("submit", async (event) => {
     });
 
     activeRunId = runId;
-    clearLogs();
+    resetRunView();
     connectToRun(runId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -574,6 +560,7 @@ ui.form.addEventListener("submit", async (event) => {
       if (payload && typeof payload === "object" && typeof payload.activeRunId === "string") {
         activeRunId = payload.activeRunId;
         attachedToActiveRun = true;
+        resetRunView();
         connectToRun(activeRunId);
       }
     }

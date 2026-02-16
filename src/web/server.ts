@@ -9,6 +9,7 @@ const DEFAULT_MAX_TURNS = 5;
 const KEEP_ALIVE_INTERVAL_MS = 15_000;
 
 const WEB_DIR = `${import.meta.dir}/../../web`;
+const PHASER_MODULE_PATH = `${import.meta.dir}/../../node_modules/phaser/dist/phaser.esm.js`;
 
 const runStartBodySchema = z
   .object({
@@ -163,6 +164,8 @@ const runManager = new RunManager();
 const app = new Elysia()
   .get("/", () => Bun.file(`${WEB_DIR}/index.html`))
   .get("/app.js", () => Bun.file(`${WEB_DIR}/app.js`))
+  .get("/phaser-board.js", () => Bun.file(`${WEB_DIR}/phaser-board.js`))
+  .get("/vendor/phaser.js", () => Bun.file(PHASER_MODULE_PATH))
   .get("/styles.css", () => Bun.file(`${WEB_DIR}/styles.css`))
   .get("/api/health", () => ({ ok: true }))
   .get("/api/personas", () => ({

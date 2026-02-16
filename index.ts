@@ -184,7 +184,7 @@ async function writeRunArtifact(params: {
       scenarioId: params.scenarioId,
       seed: params.seed,
       modelProvider: "openai-codex",
-      modelId: "gpt-5.3-codex",
+      modelId: "gpt-5.1",
       reasoning: params.reasoning,
       persona: {
         id: params.personaId,

@@ -102,12 +102,18 @@ button[disabled] {
 
 #board {
   margin: 0;
-  min-height: 210px;
+  min-height: 300px;
+  padding: 0.5rem;
   overflow: auto;
-  font-family: "IBM Plex Mono", "Menlo", monospace;
-  font-size: 0.95rem;
-  line-height: 1.2;
-  color: #261307;
+  border: 1px solid #c8ae8a;
+  border-radius: 8px;
+  background: #f3ebdc;
+}
+
+#board canvas {
+  display: block;
+  margin: 0 auto;
+  image-rendering: pixelated;
 }
 
 .logs {

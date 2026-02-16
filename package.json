@@ -16,6 +16,7 @@
   "dependencies": {
     "@mariozechner/pi-ai": "^0.52.12",
     "elysia": "^1.4.25",
+    "phaser": "^3.90.0",
     "zod": "^4.3.6"
   }
 }
