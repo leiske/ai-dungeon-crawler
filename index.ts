@@ -1,4 +1,5 @@
 import { GreedyEnemyController } from "./src/enemy/greedy.ts";
+import { OPENAI_CODEX_MODEL_ID, OPENAI_CODEX_MODEL_PROVIDER } from "./src/llm/model.ts";
 import { LlmCodexPolicy } from "./src/policy/llm.ts";
 import type { LlmDecisionTrace } from "./src/policy/llm.ts";
 import { runEpisode } from "./src/run.ts";
@@ -183,8 +184,8 @@ async function writeRunArtifact(params: {
       createdAt: new Date().toISOString(),
       scenarioId: params.scenarioId,
       seed: params.seed,
-      modelProvider: "openai-codex",
-      modelId: "gpt-5.1",
+      modelProvider: OPENAI_CODEX_MODEL_PROVIDER,
+      modelId: OPENAI_CODEX_MODEL_ID,
       reasoning: params.reasoning,
       persona: {
         id: params.personaId,
