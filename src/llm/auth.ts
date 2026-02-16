@@ -1,7 +1,7 @@
 import { getOAuthApiKey } from "@mariozechner/pi-ai";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
+import { OPENAI_CODEX_MODEL_PROVIDER } from "./model.ts";
 
-const OPENAI_CODEX_PROVIDER = "openai-codex";
 const DEFAULT_AUTH_PATH = "~/.codex/auth.json";
 
 type JsonRecord = Record<string, unknown>;
@@ -124,19 +124,19 @@ function toDirectAccessToken(value: unknown): string | null {
 }
 
 function findCredentialLocation(authJson: JsonRecord): OAuthCredentialLocation | null {
-  const providerEntry = authJson[OPENAI_CODEX_PROVIDER];
+  const providerEntry = authJson[OPENAI_CODEX_MODEL_PROVIDER];
   if (isRecord(providerEntry)) {
     return {
       container: authJson,
-      key: OPENAI_CODEX_PROVIDER,
+      key: OPENAI_CODEX_MODEL_PROVIDER,
     };
   }
 
   const oauthEntry = authJson.oauth;
-  if (isRecord(oauthEntry) && isRecord(oauthEntry[OPENAI_CODEX_PROVIDER])) {
+  if (isRecord(oauthEntry) && isRecord(oauthEntry[OPENAI_CODEX_MODEL_PROVIDER])) {
     return {
       container: oauthEntry,
-      key: OPENAI_CODEX_PROVIDER,
+      key: OPENAI_CODEX_MODEL_PROVIDER,
     };
   }
 
@@ -238,18 +238,18 @@ export async function getOpenAICodexApiKey(authPathOverride?: string): Promise<O
     }
 
     throw new Error(
-      `No valid '${OPENAI_CODEX_PROVIDER}' OAuth credentials found in '${authPath}'. ` +
+      `No valid '${OPENAI_CODEX_MODEL_PROVIDER}' OAuth credentials found in '${authPath}'. ` +
         "Expected either provider-scoped OAuth credentials or direct access token fields.",
     );
   }
 
   const credentialMap: Record<string, OAuthCredentials> = {
-    [OPENAI_CODEX_PROVIDER]: existingCredentials,
+    [OPENAI_CODEX_MODEL_PROVIDER]: existingCredentials,
   };
 
-  const result = await getOAuthApiKey(OPENAI_CODEX_PROVIDER, credentialMap);
+  const result = await getOAuthApiKey(OPENAI_CODEX_MODEL_PROVIDER, credentialMap);
   if (!result) {
-    throw new Error(`Unable to resolve OAuth API key for provider '${OPENAI_CODEX_PROVIDER}'.`);
+    throw new Error(`Unable to resolve OAuth API key for provider '${OPENAI_CODEX_MODEL_PROVIDER}'.`);
   }
 
   const updatedCredentials: JsonRecord = {
@@ -268,7 +268,7 @@ export async function getOpenAICodexApiKey(authPathOverride?: string): Promise<O
   } else if (credentialLocation) {
     setValueAtLocation(credentialLocation, updatedCredentials);
   } else {
-    authJson[OPENAI_CODEX_PROVIDER] = updatedCredentials;
+    authJson[OPENAI_CODEX_MODEL_PROVIDER] = updatedCredentials;
   }
 
   await saveAuthJson(authPath, authJson);
