@@ -16,6 +16,8 @@ import type {
   SimulationEvent,
 } from "./types.ts";
 
+const ENEMY_THINK_DELAY_MS = 250;
+
 export interface RunEpisodeOptions {
   scenario: ScenarioDefinition;
   seed: number;
@@ -114,6 +116,8 @@ export async function runEpisode(options: RunEpisodeOptions): Promise<EpisodeRes
     const aliveEnemies = sortById(state.enemies.filter((enemy) => enemy.hp > 0));
 
     for (const enemy of aliveEnemies) {
+      await Bun.sleep(ENEMY_THINK_DELAY_MS);
+
       const enemyAction = options.enemyController.chooseAction(state, enemy.id);
 
       await emitEpisodeEvent(options, {
